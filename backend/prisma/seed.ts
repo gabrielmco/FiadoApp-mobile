@@ -104,8 +104,8 @@ async function main() {
                     price: p.price,
                     cost: p.cost,
                     stock: p.stock,
-
-
+                    department: p.department,
+                    subCategory: p.subCategory,
                     unit: 'UN', // Default unit
                     trackStock: true,
                     category: 'Outros', // Legacy field
