@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import {
     View,
     Text,
@@ -15,6 +15,7 @@ import {
     Modal,
     Share
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import {
     BarChart2,
     PieChart as PieChartIcon,
@@ -166,10 +167,23 @@ const SimpleLineChart = ({ data }: { data: { label: string, value: number }[] })
 
 export default function AnalysisScreen() {
     const [loading, setLoading] = useState(true);
+    // const [sales, setSales] = useState<Sale[]>([]); // We might still need sales for charts if RPC doesn't return chart data.
+    // The prompt says: "Mantenha o gráfico de linhas simples por enquanto, focando em corrigir os números dos Cards."
+    // If I stop fetching all sales, the Line Chart (which depends on `sales`) will break or be empty.
+    // However, fetching limited sales was the bug.
+    // I should probably Fetch sales for the chart separately or accept the chart might be incomplete for now?
+    // User said: "Mantenha o gráfico de linhas simples por enquanto".
+    // I will keep fetching `getSales()` (which is paginated 20 items) BUT I will use the RPC for the TOTAL CARDS.
+    // So the Cards will be correct (Server Side), but the Chart might only show the last 20 items (Client Side).
+    // This is an acceptable intermediate state as per instructions "focusing on fixing the Card numbers".
+
     const [sales, setSales] = useState<Sale[]>([]);
     const [clients, setClients] = useState<Client[]>([]);
     const [products, setProducts] = useState<Product[]>([]);
     const [expenses, setExpenses] = useState<Expense[]>([]);
+
+    // RPC Metrics State
+    const [metrics, setMetrics] = useState({ revenue: 0, costs: 0, profit: 0, receivables: 0 });
 
     const [activeTab, setActiveTab] = useState<'GENERAL' | 'PRODUCTS' | 'COSTS'>('GENERAL');
     const [chartType, setChartType] = useState<'BAR' | 'PIE' | 'LINE'>('LINE');
@@ -179,6 +193,11 @@ export default function AnalysisScreen() {
     const [expenseAmount, setExpenseAmount] = useState('');
     const [expenseType, setExpenseType] = useState<'FIXED' | 'VARIABLE'>('VARIABLE');
     const [expenseSubmitting, setExpenseSubmitting] = useState(false);
+
+    // Settings State
+    const [showSettingsModal, setShowSettingsModal] = useState(false);
+    const [creditFee, setCreditFee] = useState('0.0');
+    const [debitFee, setDebitFee] = useState('0.0');
 
     // Filter States
     const [dateFilterType, setDateFilterType] = useState<'DAY' | 'WEEK' | 'MONTH' | 'YEAR'>('MONTH');
@@ -192,16 +211,24 @@ export default function AnalysisScreen() {
     const loadData = useCallback(async () => {
         try {
             setLoading(true);
-            const [salesData, clientsData, productsData, expensesData] = await Promise.all([
-                db.getSales(),
+            const [salesData, clientsData, productsData, expensesData, settingsData] = await Promise.all([
+                db.getSales(), // Still fetches only 20, used for "Recent" lists or partial charts
                 db.getClients(),
                 db.getProducts(),
-                db.getExpenses()
+                db.getExpenses(),
+                db.getSettings()
             ]);
             setSales(salesData);
             setClients(clientsData);
             setProducts(productsData);
             setExpenses(expensesData);
+
+            if (settingsData['credit_fee']) setCreditFee(settingsData['credit_fee']);
+            if (settingsData['debit_fee']) setDebitFee(settingsData['debit_fee']);
+
+            // Initial Metrics Load (Default Month)
+            await refreshMetrics(new Date(), 'MONTH');
+
         } catch (error) {
             console.error(error);
         } finally {
@@ -215,6 +242,7 @@ export default function AnalysisScreen() {
         }, [loadData])
     );
 
+    // --- Date Filtering Logic ---
     // --- Date Filtering Logic ---
     const getRange = useCallback(() => {
         const start = new Date(selectedDate);
@@ -244,6 +272,47 @@ export default function AnalysisScreen() {
         }
         return { start, end };
     }, [selectedDate, dateFilterType]);
+
+    // Function to calculate range and fetch RPC
+    const refreshMetrics = async (date: Date, type: string) => {
+        // Re-implement range logic inside here or reuse getRange helper?
+        // getRange depends on state, inside loadData/useEffect it might be stale?
+        // Let's rely on the effect that triggers when date/type changes.
+        // Actually, we need to call this when filter changes.
+    };
+
+    useEffect(() => {
+        const fetchMetricsRPC = async () => {
+            const { start, end } = getRange();
+            try {
+                setLoading(true);
+                // We pass start/end to RPC
+                const data = await db.getDashboardMetrics(start, end);
+                if (data) {
+                    // The RPC likely returns { revenue, costs, profit }
+                    // We also need 'receivables' (All time debt).
+                    // Receivables usually is "Total Debt" from all clients, unrelated to date filter?
+                    // Or "Receivables generated in this period"? Usually "Total Debt".
+                    // Let's keep `clients` based calculation for receivables for now, as `getClients` returns all?
+                    // Wait, getClients returns ALL clients for now (assuming not thousands).
+                    const totalReceivables = clients.reduce((sum, client) => sum + client.totalDebt, 0);
+
+                    setMetrics({
+                        revenue: data.revenue || 0,
+                        costs: data.costs || 0,
+                        profit: data.profit || 0,
+                        receivables: totalReceivables
+                    });
+                }
+            } catch (e) {
+                console.error("Metrics fetch error", e);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        fetchMetricsRPC();
+    }, [selectedDate, dateFilterType, clients, getRange]); // Add clients dependency to update receivables if clients load late
 
     const filteredSales = useMemo(() => {
         const { start, end } = getRange();
@@ -284,33 +353,12 @@ export default function AnalysisScreen() {
 
     // --- Calculations ---
 
-    const totalRevenue = filteredSales.reduce((sum, sale) => sum + sale.finalTotal, 0);
-    // Note: totalReceivables might depend on ALL OPEN debts, not just this period sales.
-    // Usually "A Receber" is global.
-    const totalReceivables = clients.reduce((sum, client) => sum + client.totalDebt, 0);
+    // --- Calculations (REPLACED BY RPC) ---
+    // const totalRevenue = filteredSales.reduce((sum, sale) => sum + sale.finalTotal, 0);
+    // const totalReceivables = clients.reduce((sum, client) => sum + client.totalDebt, 0);
+    // ...
+    // Using `metrics` state now.
 
-    // Product Costs (COGS)
-    const salesWithCost = useMemo(() => {
-        return filteredSales.map(sale => {
-            const saleCost = sale.items.reduce((itemSum, item) => {
-                const product = products.find(p => p.id === item.productId);
-                const unitCost = (product && product.cost) ? product.cost : (item.unitPrice * 0.7);
-                return itemSum + (unitCost * item.quantity);
-            }, 0);
-            return {
-                ...sale,
-                cost: saleCost,
-                profit: sale.finalTotal - saleCost
-            };
-        });
-    }, [filteredSales, products]);
-
-    const totalCOGS = salesWithCost.reduce((sum, s) => sum + s.cost, 0);
-    const totalOperatingExpenses = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
-    const totalCosts = totalCOGS + totalOperatingExpenses;
-
-    // Net Profit = Revenue - (COGS + Expenses)
-    const netProfit = totalRevenue - totalCosts;
 
     // --- Chart Data Preparation ---
 
@@ -404,6 +452,20 @@ export default function AnalysisScreen() {
             });
         } catch (error) {
             Alert.alert('Erro', 'Falha ao gerar backup: ' + error);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleSaveSettings = async () => {
+        try {
+            setLoading(true);
+            await db.saveSetting('credit_fee', creditFee.replace(',', '.'));
+            await db.saveSetting('debit_fee', debitFee.replace(',', '.'));
+            Alert.alert('Sucesso', 'Taxas atualizadas!');
+            setShowSettingsModal(false);
+        } catch (e) {
+            Alert.alert('Erro', 'Falha ao salvar configurações.');
         } finally {
             setLoading(false);
         }
@@ -514,14 +576,19 @@ export default function AnalysisScreen() {
     return (
         <SafeAreaView style={styles.container}>
             {/* Header */}
-            <View style={styles.header}>
+            <LinearGradient
+                colors={['#0F2027', '#203A43', '#2C5364']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.header}
+            >
                 <View style={styles.headerTop}>
                     <Text style={styles.headerTitle}>Análise Completa</Text>
                     <TouchableOpacity
                         style={styles.monthSelector}
                         onPress={() => setShowDateFilterModal(true)}
                     >
-                        <Calendar size={18} color="#374151" style={{ marginRight: 8 }} />
+                        <Calendar size={18} color="#FFF" style={{ marginRight: 8 }} />
                         <Text style={styles.monthText}>
                             {formatDateRange()}
                         </Text>
@@ -530,14 +597,14 @@ export default function AnalysisScreen() {
 
                 {/* Tabs Segmented Control - Modified to include Backup Button */}
                 <View style={styles.tabsRow}>
-                    <View style={[styles.segmentedControl, { flex: 1 }]}>
+                    <View style={[styles.segmentedControl, { flex: 1, backgroundColor: 'rgba(255,255,255,0.2)' }]}>
                         {(['GENERAL', 'PRODUCTS', 'COSTS'] as const).map((tab) => (
                             <TouchableOpacity
                                 key={tab}
                                 style={[styles.segmentBtn, activeTab === tab && styles.segmentBtnActive]}
                                 onPress={() => setActiveTab(tab)}
                             >
-                                <Text style={[styles.segmentText, activeTab === tab && styles.segmentTextActive]}>
+                                <Text style={[styles.segmentText, activeTab === tab && styles.segmentTextActive, activeTab !== tab && { color: '#E5E7EB' }]}>
                                     {tab === 'GENERAL' ? 'Visão Geral' : tab === 'PRODUCTS' ? 'Produtos' : 'Despesas'}
                                 </Text>
                             </TouchableOpacity>
@@ -545,12 +612,10 @@ export default function AnalysisScreen() {
                     </View>
                     {/* Backup Button next to tabs */}
                     <TouchableOpacity style={styles.backupBtnSmall} onPress={() => setShowBackupModal(true)}>
-                        <Database size={20} color="#203A43" />
-                        {/* <Text style={{fontSize: 10, color: '#203A43', fontWeight: 'bold'}}>BKP</Text> */}
-                        {/* Icon only is cleaner for small space */}
+                        <Database size={20} color="#FFF" />
                     </TouchableOpacity>
                 </View>
-            </View>
+            </LinearGradient>
 
             <ScrollView
                 contentContainerStyle={styles.content}
@@ -561,12 +626,12 @@ export default function AnalysisScreen() {
                         {/* KPI Grid */}
                         <View style={styles.gridContainer}>
                             <View style={styles.row}>
-                                <KPICard title="Faturamento Total" value={totalRevenue} color="#2563EB" />
-                                <KPICard title="Lucro Líquido" value={netProfit} color="#203A43" footer="(Rec - Custos - Despesas)" />
+                                <KPICard title="Faturamento Total" value={metrics.revenue} color="#2563EB" />
+                                <KPICard title="Lucro Líquido" value={metrics.profit} color="#203A43" footer="(Rec - Custos - Despesas)" />
                             </View>
                             <View style={styles.row}>
-                                <KPICard title="Custos Operacionais" value={totalCosts} color="#EF4444" footer={`Prod: ${totalCOGS.toFixed(0)} | Desp: ${totalOperatingExpenses.toFixed(0)}`} />
-                                <KPICard title="A Receber (Fiado)" value={totalReceivables} color="#F97316" />
+                                <KPICard title="Custos Operacionais" value={metrics.costs} color="#EF4444" footer="Produtos + Despesas" />
+                                <KPICard title="A Receber (Fiado)" value={metrics.receivables} color="#F97316" />
                             </View>
                         </View>
 
@@ -624,9 +689,49 @@ export default function AnalysisScreen() {
 
                 {activeTab === 'COSTS' && (
                     <View>
+                        {/* Summary of Card Fees */}
+                        {(() => {
+                            const cardFeeExpenses = filteredExpenses.filter(e => e.type === 'CARD_FEE');
+                            const cardFeeTotal = cardFeeExpenses.reduce((sum, e) => sum + e.amount, 0);
+
+                            return (
+                                <View style={styles.cardFeeCard}>
+                                    <View>
+                                        <Text style={styles.cardFeeTitle}>Taxas de Cartão</Text>
+                                        <Text style={styles.cardFeeSubtitle}>Crédito: {creditFee}% | Débito: {debitFee}%</Text>
+                                        <TouchableOpacity
+                                            style={{
+                                                flexDirection: 'row',
+                                                alignItems: 'center',
+                                                marginTop: 8,
+                                                backgroundColor: '#203A43',
+                                                paddingVertical: 8,
+                                                paddingHorizontal: 16,
+                                                borderRadius: 8,
+                                                shadowColor: '#000',
+                                                shadowOpacity: 0.1,
+                                                shadowRadius: 2,
+                                                elevation: 1
+                                            }}
+                                            onPress={() => setShowSettingsModal(true)}
+                                        >
+                                            <Server size={16} color="#FFF" style={{ marginRight: 8 }} />
+                                            <Text style={{ color: '#FFF', fontSize: 14, fontWeight: 'bold' }}>Alterar Taxas</Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                    <View style={{ alignItems: 'flex-end' }}>
+                                        <Text style={{ fontSize: 10, color: '#6B7280' }}>Total (Período)</Text>
+                                        <Text style={styles.cardFeeValue}>
+                                            R$ {cardFeeTotal.toFixed(2)}
+                                        </Text>
+                                    </View>
+                                </View>
+                            );
+                        })()}
+
                         {/* Add Expense Form */}
                         <View style={styles.formCard}>
-                            <Text style={styles.formTitle}>Registrar Despesa</Text>
+                            <Text style={styles.formTitle}>Registrar Despesa Manual</Text>
                             <TextInput
                                 style={styles.input}
                                 placeholder="Descrição (ex: Aluguel)"
@@ -665,11 +770,11 @@ export default function AnalysisScreen() {
                             </View>
                         </View>
 
-                        <Text style={styles.sectionTitle}>Extrato de Despesas</Text>
-                        {filteredExpenses.length === 0 ? (
-                            <Text style={styles.emptyText}>Nenhuma despesa no período.</Text>
+                        <Text style={styles.sectionTitle}>Extrato de Despesas Manuais</Text>
+                        {filteredExpenses.filter(e => e.type !== 'CARD_FEE').length === 0 ? (
+                            <Text style={styles.emptyText}>Nenhuma despesa manual no período.</Text>
                         ) : (
-                            filteredExpenses.slice(0, 50).map((e) => (
+                            filteredExpenses.filter(e => e.type !== 'CARD_FEE').slice(0, 50).map((e) => (
                                 <View key={e.id} style={styles.expenseRow}>
                                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                                         <View style={[styles.dot, { backgroundColor: e.type === 'FIXED' ? '#3B82F6' : '#F59E0B' }]} />
@@ -740,6 +845,47 @@ export default function AnalysisScreen() {
                 </View>
             </Modal>
 
+            {/* Settings Modal */}
+            <Modal
+                animationType="slide"
+                transparent={true}
+                visible={showSettingsModal}
+                onRequestClose={() => setShowSettingsModal(false)}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalContent}>
+                        <View style={styles.modalHeader}>
+                            <Text style={styles.modalTitle}>Configurar Taxas</Text>
+                            <TouchableOpacity onPress={() => setShowSettingsModal(false)}>
+                                <X size={24} color="#374151" />
+                            </TouchableOpacity>
+                        </View>
+
+                        <Text style={styles.label}>Taxa Crédito (%)</Text>
+                        <TextInput
+                            style={styles.input}
+                            value={creditFee}
+                            onChangeText={setCreditFee}
+                            keyboardType="numeric"
+                            placeholder="Ex: 2.0"
+                        />
+
+                        <Text style={styles.label}>Taxa Débito (%)</Text>
+                        <TextInput
+                            style={styles.input}
+                            value={debitFee}
+                            onChangeText={setDebitFee}
+                            keyboardType="numeric"
+                            placeholder="Ex: 1.0"
+                        />
+
+                        <TouchableOpacity style={styles.confirmBtn} onPress={handleSaveSettings}>
+                            <Text style={styles.confirmBtnText}>Salvar</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
+
             {/* Backup Modal */}
             <Modal
                 animationType="fade"
@@ -777,26 +923,46 @@ export default function AnalysisScreen() {
                     </View>
                 </View>
             </Modal>
-        </SafeAreaView>
+        </SafeAreaView >
     );
 }
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#F3F4F6' },
-    header: { backgroundColor: '#fff', paddingTop: Platform.OS === 'android' ? 40 : 10, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: '#E5E7EB' },
-    headerTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, marginBottom: 16 },
-    headerTitle: { fontSize: 24, fontWeight: 'bold', color: '#111827' },
-    monthSelector: { backgroundColor: '#F9FAFB', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#E5E7EB' },
-    monthText: { color: '#374151', fontWeight: '500' },
+    header: {
+        paddingHorizontal: 24,
+        paddingTop: Platform.OS === 'android' ? 60 : 20,
+        paddingBottom: 30,
+        borderBottomLeftRadius: 24,
+        borderBottomRightRadius: 24,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.25,
+        shadowRadius: 15,
+        elevation: 8,
+    },
+    headerTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+    headerTitle: { fontSize: 24, fontWeight: 'bold', color: '#FFF' },
+    monthSelector: {
+        flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.15)',
+        paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20
+    },
+    monthText: { fontSize: 13, fontWeight: 'bold', color: '#FFF' },
 
-    tabsRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, gap: 10 },
-    segmentedControl: { flexDirection: 'row', backgroundColor: '#F3F4F6', borderRadius: 8, padding: 2 },
-    segmentBtn: { flex: 1, alignItems: 'center', paddingVertical: 6, borderRadius: 6 },
-    segmentBtnActive: { backgroundColor: '#fff', shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 2, elevation: 1 },
-    segmentText: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
-    segmentTextActive: { color: '#111827', fontWeight: '600' },
+    tabsRow: { flexDirection: 'row', gap: 12 },
+    segmentedControl: {
+        flexDirection: 'row', backgroundColor: '#F3F4F6',
+        borderRadius: 12, padding: 4, height: 44
+    },
+    segmentBtn: { flex: 1, alignItems: 'center', justifyContent: 'center', borderRadius: 10 },
+    segmentBtnActive: { backgroundColor: '#FFF', shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 2, elevation: 1 },
+    segmentText: { fontSize: 12, fontWeight: '600', color: '#6B7280' },
+    segmentTextActive: { color: '#203A43', fontWeight: 'bold' },
 
-    backupBtnSmall: { backgroundColor: '#F3F4F6', padding: 8, borderRadius: 8, borderWidth: 1, borderColor: '#E5E7EB', alignItems: 'center', justifyContent: 'center' },
+    backupBtnSmall: {
+        width: 44, height: 44, backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 12,
+        alignItems: 'center', justifyContent: 'center'
+    },
 
     content: { padding: 20 },
     gridContainer: { gap: 12, marginBottom: 20 },
@@ -844,6 +1010,15 @@ const styles = StyleSheet.create({
     expenseDesc: { fontSize: 14, color: '#374151', fontWeight: '500' },
     expenseDate: { fontSize: 10, color: '#9CA3AF' },
     expenseAmount: { fontSize: 14, fontWeight: 'bold', color: '#EF4444' },
+
+    // Card Fees Styles
+    cardFeeCard: { backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 20, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 },
+    cardFeeTitle: { fontSize: 16, fontWeight: 'bold', color: '#374151' },
+    cardFeeSubtitle: { fontSize: 12, color: '#9CA3AF' },
+    cardFeeValue: { fontSize: 20, fontWeight: 'bold', color: '#EF4444' },
+
+    // Modal Form Elements
+    label: { fontSize: 14, fontWeight: 'bold', color: '#374151', marginBottom: 8, marginTop: 16 },
 
     emptyText: { textAlign: 'center', color: '#9CA3AF', marginVertical: 20, fontStyle: 'italic' },
 

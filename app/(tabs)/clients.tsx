@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, Alert, Modal, SafeAreaView, Platform } from 'react-native';
-import { Search, ChevronRight, Plus, Filter, X, Edit2 } from 'lucide-react-native';
+import { View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, Alert, Modal, SafeAreaView, Platform, Linking } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Search, ChevronRight, Plus, Filter, X, Edit2, MessageCircle, Wallet } from 'lucide-react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Client } from '../../types';
 import { db } from '../../services/db';
@@ -81,57 +82,126 @@ export default function ClientsScreen() {
         }
     };
 
+    const handleChargeClient = async (client: Client) => {
+        // 1. Check Phone
+        let phone = client.phone ? client.phone.replace(/\D/g, '') : '';
+
+        if (!phone || phone.length < 10) {
+            Alert.alert(
+                "Sem Telefone",
+                "Este cliente não possui um telefone válido cadastrado. Deseja adicionar agora?",
+                [
+                    { text: "Cancelar", style: "cancel" },
+                    {
+                        text: "Adicionar",
+                        onPress: () => router.push({ pathname: '/clients/[id]', params: { id: client.id } }) // Redirect to details to edit
+                    }
+                ]
+            );
+            return;
+        }
+
+        // 2. Find Oldest Unpaid Sale for Context
+        try {
+            const clientSales = await db.getClientSales(client.id);
+            const unpaidSales = clientSales.filter(s => s.remainingBalance > 0);
+
+            // Sort by date ascending (oldest first)
+            unpaidSales.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+            const oldestSale = unpaidSales[0];
+            const purchaseDate = oldestSale ? new Date(oldestSale.timestamp).toLocaleDateString('pt-BR') : 'data desconhecida';
+
+            const dueDateObj = new Date(oldestSale ? oldestSale.timestamp : new Date());
+            dueDateObj.setDate(dueDateObj.getDate() + 30);
+            const dueDate = dueDateObj.toLocaleDateString('pt-BR');
+
+            // 3. Build Message
+            const message = `Olá *${client.name}*! 👋
+
+Consta em nosso sistema uma pendência de *${formatCurrency(client.totalDebt)}*.
+
+Referente à compra do dia *${purchaseDate}* (Vencimento: *${dueDate}*).
+
+Podemos agendar o pagamento?
+
+_Mensagem automática - Gestor de Vendas_`;
+
+            // 4. Open WhatsApp
+            if (phone.length <= 11) phone = '55' + phone;
+            const url = `whatsapp://send?phone=${phone}&text=${encodeURIComponent(message)}`;
+
+            const supported = await Linking.canOpenURL(url);
+            if (supported) {
+                await Linking.openURL(url);
+            } else {
+                Alert.alert("Erro", "WhatsApp não está instalado.");
+            }
+
+        } catch (e) {
+            console.error(e);
+            Alert.alert("Erro", "Falha ao preparar mensagem de cobrança.");
+        }
+    };
+
     const renderClientItem = ({ item }: { item: Client }) => {
         let status = 'Em dia';
-        let statusStyle = styles.badgeGreen;
-        let statusTextOpen = styles.textGreen;
+        let statusColor = '#16A34A'; // Green
+        let statusBg = '#DCFCE7';
 
-        // Regras de Cores Semânticas
         if (item.totalDebt > 0) {
             if ((item.oldestDebtDays || 0) > 30) {
-                status = `Atrasado ${item.oldestDebtDays} dias`;
-                statusStyle = styles.badgeRed;
-                statusTextOpen = styles.textRed;
+                status = `Atrasado há ${item.oldestDebtDays} dias`;
+                statusColor = '#DC2626'; // Red
+                statusBg = '#FEE2E2';
             } else {
-                status = `Pendente ${item.oldestDebtDays || 1} dias`;
-                statusStyle = styles.badgeOrange;
-                statusTextOpen = styles.textOrange;
+                status = `Pendente há ${item.oldestDebtDays || 1} dias`;
+                statusColor = '#D97706'; // Orange
+                statusBg = '#FFEDD5';
             }
         }
 
         return (
             <TouchableOpacity
                 style={styles.card}
-                activeOpacity={0.7} // Feedback tátil
+                activeOpacity={0.7}
                 onPress={() => router.push({ pathname: '/clients/[id]', params: { id: item.id } })}
             >
                 <View style={styles.cardHeader}>
-                    <View>
+                    <View style={{ flex: 1 }}>
                         <Text style={styles.clientName}>{item.name}</Text>
-                        <View style={styles.badgesRow}>
-                            <View style={[styles.badge, statusStyle]}>
-                                <Text style={[styles.badgeText, statusTextOpen]}>{status}</Text>
-                            </View>
-                            {item.credit > 0 && (
-                                <View style={[styles.badge, styles.badgeBlue]}>
-                                    <Text style={[styles.badgeText, styles.textBlue]}>
-                                        Crédito: {formatCurrency(item.credit)}
-                                    </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
+                            {item.totalDebt > 0 ? (
+                                <View style={[styles.badge, { backgroundColor: statusBg }]}>
+                                    <Text style={[styles.badgeText, { color: statusColor }]}>{status}</Text>
+                                </View>
+                            ) : (
+                                <View style={[styles.badge, { backgroundColor: '#DCFCE7' }]}>
+                                    <Text style={[styles.badgeText, { color: '#16A34A' }]}>Em dia</Text>
                                 </View>
                             )}
                         </View>
                     </View>
-                    <ChevronRight size={20} color="#ccc" />
-                </View>
 
-                <View style={styles.cardFooter}>
-                    <View style={styles.debtContainer}>
-                        <Text style={styles.debtLabel}>Deve</Text>
-                        <Text style={[styles.debtValue, item.totalDebt > 0 ? styles.textRed : styles.textGreen]}>
+                    <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={styles.debtLabel}>Saldo</Text>
+                        <Text style={[styles.debtValue, { color: item.totalDebt > 0 ? '#DC2626' : '#16A34A' }]}>
                             {formatCurrency(item.totalDebt)}
                         </Text>
                     </View>
                 </View>
+
+                {item.totalDebt > 0 && (
+                    <View style={styles.cardActions}>
+                        <TouchableOpacity
+                            style={styles.chargeButton}
+                            onPress={() => router.push({ pathname: '/clients/[id]', params: { id: item.id } })}
+                        >
+                            <Wallet size={18} color="#FFF" style={{ marginRight: 8 }} />
+                            <Text style={styles.chargeButtonText}>VER CARTEIRA</Text>
+                        </TouchableOpacity>
+                    </View>
+                )}
             </TouchableOpacity>
         );
     };
@@ -139,9 +209,16 @@ export default function ClientsScreen() {
     return (
         <SafeAreaView style={styles.container}>
             {/* Header Limpo (Sem botão de adicionar) */}
-            <View style={styles.header}>
-                <Text style={styles.title}>Meus Clientes</Text>
-            </View>
+            <LinearGradient
+                colors={['#0F2027', '#203A43', '#2C5364']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.header}
+            >
+                <SafeAreaView>
+                    <Text style={styles.title}>Meus Clientes</Text>
+                </SafeAreaView>
+            </LinearGradient>
 
             {/* Search */}
             <View style={styles.searchContainer}>
@@ -178,11 +255,16 @@ export default function ClientsScreen() {
 
             {/* FAB - Floating Action Button (Botão Flutuante) */}
             <TouchableOpacity
-                style={styles.fab}
+                style={styles.fabContainer}
                 activeOpacity={0.8}
                 onPress={() => router.push('/clients/new')}
             >
-                <Plus size={32} color="#FFF" />
+                <LinearGradient
+                    colors={['#0F2027', '#203A43', '#2C5364']}
+                    style={styles.fabGradient}
+                >
+                    <Plus size={32} color="#FFF" />
+                </LinearGradient>
             </TouchableOpacity>
 
             {/* Filter Modal */}
@@ -238,29 +320,38 @@ const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#F3F4F6' },
     header: {
         paddingHorizontal: 24,
-        paddingTop: Platform.OS === 'android' ? 40 : 20,
-        paddingBottom: 20,
-        backgroundColor: '#fff'
+        paddingTop: Platform.OS === 'android' ? 60 : 20,
+        paddingBottom: 30,
+        // backgroundColor is handled by gradient
+        borderBottomLeftRadius: 24,
+        borderBottomRightRadius: 24,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.25,
+        shadowRadius: 15,
+        elevation: 8,
     },
-    title: { fontSize: 26, fontWeight: 'bold', color: '#1F2937' },
+    title: { fontSize: 26, fontWeight: 'bold', color: '#FFF' },
 
     // FAB Styles
-    fab: {
+    fabContainer: {
         position: 'absolute',
         bottom: 24,
         right: 24,
-        width: 64,
-        height: 64,
         borderRadius: 32,
-        backgroundColor: '#203A43',
-        alignItems: 'center',
-        justifyContent: 'center',
         elevation: 6,
         shadowColor: '#000',
         shadowOffset: { width: 0, height: 4 },
         shadowOpacity: 0.3,
         shadowRadius: 4,
         zIndex: 10
+    },
+    fabGradient: {
+        width: 64,
+        height: 64,
+        borderRadius: 32,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
 
     searchContainer: {
@@ -296,32 +387,38 @@ const styles = StyleSheet.create({
 
     card: {
         backgroundColor: '#FFF',
-        borderRadius: 16,
-        padding: 20,
+        borderRadius: 12,
+        padding: 12,
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
+        shadowOffset: { width: 0, height: 1 },
         shadowOpacity: 0.05,
-        shadowRadius: 8,
+        shadowRadius: 4,
         elevation: 2,
     },
     cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-    clientName: { fontSize: 18, fontWeight: 'bold', color: '#1F2937', marginBottom: 6 },
-    badgesRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
-    badge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
-    badgeText: { fontSize: 12, fontWeight: 'bold' },
+    clientName: { fontSize: 18, fontWeight: 'bold', color: '#1F2937' },
+    badgesRow: { flexDirection: 'row', gap: 4, flexWrap: 'wrap', marginTop: 4 },
+    badge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
+    badgeText: { fontSize: 11, fontWeight: 'bold' },
 
-    badgeGreen: { backgroundColor: '#DCFCE7' },
-    textGreen: { color: '#15803D' },
-    badgeRed: { backgroundColor: '#FEE2E2' },
-    textRed: { color: '#B91C1C' },
-    badgeOrange: { backgroundColor: '#FFEDD5' },
-    textOrange: { color: '#C2410C' },
-    badgeBlue: { backgroundColor: '#EFF6FF' },
-    textBlue: { color: '#1D4ED8' },
+    cardActions: { marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: '#F3F4F6' },
+    chargeButton: {
+        backgroundColor: '#203A43',
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 12,
+        borderRadius: 8,
+        marginTop: 12,
+        shadowColor: '#203A43',
+        shadowOpacity: 0.2,
+        shadowRadius: 4,
+        elevation: 3
+    },
+    chargeButtonText: { color: '#FFF', fontWeight: 'bold', fontSize: 14, letterSpacing: 0.5 },
 
-    cardFooter: { flexDirection: 'row', justifyContent: 'flex-end', marginTop: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6', paddingTop: 12 },
     debtContainer: { alignItems: 'flex-end' },
-    debtLabel: { fontSize: 12, color: '#6B7280', marginBottom: 2 },
+    debtLabel: { fontSize: 11, color: '#6B7280', textTransform: 'uppercase', marginBottom: 2 },
     debtValue: { fontSize: 18, fontWeight: 'bold' },
 
     modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 24 },

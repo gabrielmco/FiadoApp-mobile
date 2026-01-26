@@ -42,7 +42,7 @@ Antes de começar, você precisa ter instalado em sua máquina:
 
 1.  **Clone o repositório:**
     ```bash
-    git clone [https://github.com/SEU-USUARIO/gestor-vendas-mobile.git](https://github.com/SEU-USUARIO/gestor-vendas-mobile.git)
+    git clone https://github.com/gabrielmco/FiadoApp-mobile.git
     cd gestor-vendas-mobile
     ```
 

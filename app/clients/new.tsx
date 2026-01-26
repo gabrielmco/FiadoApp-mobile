@@ -12,14 +12,17 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { ArrowLeft, Save } from 'lucide-react-native';
-import { supabase } from '../../lib/supabase';
+import { db } from '../../services/db';
 
 export default function NewClientScreen() {
     const router = useRouter();
     const [loading, setLoading] = useState(false);
     const [formData, setFormData] = useState({
         name: '',
+        cpf: '',
         phone: '',
+        address: '',
+        neighborhood: ''
     });
 
     const handleSave = async () => {
@@ -30,16 +33,14 @@ export default function NewClientScreen() {
 
         try {
             setLoading(true);
-            const { error } = await supabase
-                .from('clients')
-                .insert({
-                    name: formData.name,
-                    phone: formData.phone || null,
-                    credit: 0,
-                    total_debt: 0
-                });
-
-            if (error) throw error;
+            await db.addClient({
+                name: formData.name,
+                cpf: formData.cpf || undefined,
+                phone: formData.phone || undefined,
+                address: formData.address || undefined,
+                neighborhood: formData.neighborhood || undefined,
+                credit: 0
+            });
 
             router.back();
         } catch (error: any) {
@@ -84,6 +85,25 @@ export default function NewClientScreen() {
                             onChangeText={(text) => setFormData({ ...formData, phone: text })}
                         />
                     </View>
+                    <View style={styles.inputGroup}>
+                        <Text style={styles.label}>Endereço</Text>
+                        <TextInput
+                            style={styles.input}
+                            placeholder="Rua, Número"
+                            value={formData.address}
+                            onChangeText={(text) => setFormData({ ...formData, address: text })}
+                        />
+                    </View>
+
+                    <View style={styles.inputGroup}>
+                        <Text style={styles.label}>Bairro</Text>
+                        <TextInput
+                            style={styles.input}
+                            placeholder="Nome do Bairro"
+                            value={formData.neighborhood}
+                            onChangeText={(text) => setFormData({ ...formData, neighborhood: text })}
+                        />
+                    </View>
                 </View>
 
                 <View style={styles.footer}>
@@ -112,7 +132,9 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
-        padding: 20,
+        paddingHorizontal: 20,
+        paddingVertical: 12,
+        paddingTop: Platform.OS === 'android' ? 40 : 12,
         backgroundColor: '#fff',
         borderBottomWidth: 1,
         borderBottomColor: '#E5E7EB',

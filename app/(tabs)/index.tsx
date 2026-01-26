@@ -3,30 +3,39 @@ import {
     View,
     Text,
     StyleSheet,
-    FlatList,
     TouchableOpacity,
     SafeAreaView,
-    RefreshControl,
     Platform,
     Modal,
     TextInput,
     Alert,
-    ScrollView,
-    KeyboardAvoidingView
+    KeyboardAvoidingView,
+    FlatList,
+    ScrollView
 } from 'react-native';
-import { Plus, History, User, Package, Users, CheckCircle, Wallet, X, Minus, Trash2, Search, Pencil } from 'lucide-react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Plus, X, Minus, Trash2, Search, FileText, CheckCircle } from 'lucide-react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
+import { useAuth } from '../../contexts/AuthContext';
 import { db } from '../../services/db';
-import { Sale, PaymentRecord, Product } from '../../types';
+import { ReceiptService } from '../../services/receipt';
+import { Sale, PaymentRecord, Product, Client } from '../../types';
+import { Colors } from '../../constants/colors';
 
-// Componente para Input de Preço Seguro (Evita bugs de digitação)
+// Imported Components
+import { AlertsSection } from '../../components/dashboard/AlertsSection';
+import { QuickActions } from '../../components/dashboard/QuickActions';
+import { HistorySection } from '../../components/dashboard/HistorySection';
+import { FadeIn } from '../../components/ui/FadeIn';
+
+// Componente para Input de Preço Seguro
 const PriceInput = ({ value, onChange, style }: { value: number, onChange: (val: number) => void, style?: any }) => {
     const [text, setText] = useState(value.toFixed(2));
 
     const handleEndEditing = () => {
         const val = parseFloat(text.replace(',', '.')) || 0;
         onChange(val);
-        setText(val.toFixed(2)); // Formata bonitinho ao sair
+        setText(val.toFixed(2));
     };
 
     return (
@@ -41,11 +50,14 @@ const PriceInput = ({ value, onChange, style }: { value: number, onChange: (val:
 };
 
 export default function DashboardScreen() {
+    const { user } = useAuth();
     const router = useRouter();
+    const firstName = user?.user_metadata?.full_name?.split(' ')[0] || 'Usuário';
     const [historyTab, setHistoryTab] = useState<'ALL' | 'CASH' | 'CREDIT'>('ALL');
     const [sales, setSales] = useState<Sale[]>([]);
     const [payments, setPayments] = useState<(PaymentRecord & { clientName: string })[]>([]);
     const [products, setProducts] = useState<Product[]>([]);
+    const [alerts, setAlerts] = useState<{ stockAlerts: Product[], debtAlerts: Client[] }>({ stockAlerts: [], debtAlerts: [] });
     const [loading, setLoading] = useState(false);
 
     // --- STATES DO MODAL DE EDIÇÃO ---
@@ -61,14 +73,16 @@ export default function DashboardScreen() {
     const loadData = useCallback(async () => {
         setLoading(true);
         try {
-            const [salesData, paymentsData, productsData] = await Promise.all([
+            const [salesData, paymentsData, productsData, alertsData] = await Promise.all([
                 db.getSales(),
-                db.getAllPayments(),
-                db.getProducts()
+                db.getAllPayments(20), // Fetch only recent payments
+                db.getProducts(),
+                db.checkAlerts()
             ]);
             setSales(salesData);
             setPayments(paymentsData);
             setProducts(productsData);
+            setAlerts(alertsData);
         } catch (e) {
             console.error(e);
         } finally {
@@ -90,7 +104,7 @@ export default function DashboardScreen() {
     const filteredHistory = mixedHistory.filter(item => {
         const isSale = 'items' in item;
         if (historyTab === 'ALL') return true;
-        if (historyTab === 'CASH') return isSale ? (item as Sale).type === 'CASH' : true; // Pagamentos são "Cash" flow
+        if (historyTab === 'CASH') return isSale ? (item as Sale).type === 'CASH' : true;
         if (historyTab === 'CREDIT') return isSale ? (item as Sale).type === 'CREDIT' : false;
         return true;
     });
@@ -103,10 +117,11 @@ export default function DashboardScreen() {
     // --- FUNÇÕES DE EDIÇÃO ---
     const openEditModal = (sale: Sale) => {
         setEditingSale(sale);
+        // @ts-ignore
         setEditedItems(sale.items.map(i => ({ ...i })));
         setEditedDiscount(sale.discountOrAdjustment || 0);
         setIsEditModalOpen(true);
-        setShowProductList(false); // Reset visual state
+        setShowProductList(false);
         setSearchQuery('');
     };
 
@@ -166,7 +181,7 @@ export default function DashboardScreen() {
             await db.updateSale(editingSale.id, editedItems, editedDiscount);
             Alert.alert("Sucesso", "Venda atualizada!");
             setIsEditModalOpen(false);
-            loadData(); // Reload logic
+            loadData();
         } catch (e) {
             Alert.alert("Erro", "Falha ao atualizar venda: " + e);
         }
@@ -274,152 +289,63 @@ export default function DashboardScreen() {
         );
     };
 
-    const renderItem = ({ item }: { item: any }) => {
-        // PAGAMENTO (CLICÁVEL)
-        if (!('items' in item)) {
-            const payment = item as (PaymentRecord & { clientName: string });
-            return (
-                <TouchableOpacity onPress={() => openPaymentModal(payment)} activeOpacity={0.7}>
-                    <View style={[styles.saleCard, styles.paymentCardBorder]}>
-                        <View style={styles.saleCardLeft}>
-                            <View style={[styles.avatarPlaceholder, { backgroundColor: '#F0FDF4' }]}>
-                                <Wallet size={20} color="#16A34A" />
-                            </View>
-                            <View>
-                                <Text style={styles.saleClientName}>{payment.clientName}</Text>
-                                <Text style={styles.saleInfo}>
-                                    {new Date(payment.timestamp).toLocaleDateString('pt-BR')} • {new Date(payment.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                                </Text>
-                                <Text style={[styles.saleItemsText, { color: '#16A34A', fontWeight: '500' }]}>
-                                    Recebimento de Dívida
-                                </Text>
-                            </View>
-                        </View>
-                        <View style={styles.saleCardRight}>
-                            <Text style={[styles.saleTotal, { color: '#16A34A' }]}>+ R$ {payment.amount.toFixed(2).replace('.', ',')}</Text>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 6 }}>
-                                <Pencil size={14} color="#16A34A" />
-                                <View style={[styles.statusBadge, styles.statusBadgeCash]}>
-                                    <Text style={[styles.statusText, styles.statusTextCash]}>Recebido</Text>
-                                </View>
-                            </View>
-                        </View>
-                    </View>
-                </TouchableOpacity>
-            );
-        }
-
-        // VENDA (Clicável)
-        const sale = item as Sale;
-        return (
-            <TouchableOpacity onPress={() => openEditModal(sale)} activeOpacity={0.7}>
-                <View style={styles.saleCard}>
-                    <View style={styles.saleCardLeft}>
-                        <View style={styles.avatarPlaceholder}>
-                            <User size={20} color="#203A43" />
-                        </View>
-                        <View>
-                            <Text style={styles.saleClientName}>{sale.clientName}</Text>
-                            <Text style={styles.saleInfo}>
-                                {new Date(sale.timestamp).toLocaleDateString('pt-BR')} • {new Date(sale.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                            </Text>
-                            <Text style={styles.saleItemsText} numberOfLines={2}>
-                                {sale.items.length} {sale.items.length === 1 ? 'item' : 'itens'}: {sale.items.map(i => i.productName).join(', ')}
-                            </Text>
-                        </View>
-                    </View>
-                    <View style={styles.saleCardRight}>
-                        <Text style={styles.saleTotal}>R$ {sale.finalTotal.toFixed(2).replace('.', ',')}</Text>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 6 }}>
-                            <Pencil size={14} color="#9CA3AF" />
-                            <View style={[styles.statusBadge, sale.type === 'CREDIT' ? styles.statusBadgeCredit : styles.statusBadgeCash]}>
-                                <Text style={[styles.statusText, sale.type === 'CREDIT' ? styles.statusTextCredit : styles.statusTextCash]}>
-                                    {sale.type === 'CREDIT' ? 'Pendente' : 'Pago'}
-                                </Text>
-                            </View>
-                        </View>
-                    </View>
-                </View>
-            </TouchableOpacity>
-        );
-    };
-
     return (
         <View style={styles.container}>
             {/* Top Header Section */}
-            <View style={styles.headerContainer}>
+            <LinearGradient
+                colors={[Colors.primaryDark, Colors.primary, Colors.primaryLight]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.headerContainer}
+            >
                 <SafeAreaView>
                     <View style={styles.headerContent}>
-                        <View>
-                            <Text style={styles.welcomeText}>Bem-vindo</Text>
-                            <Text style={styles.brandText}>Gestor de Vendas</Text>
+                        <View style={styles.headerTextContainer}>
+                            <Text style={styles.welcomeLabel}>Bem vindo,</Text>
+                            <Text style={styles.userNameText}>{firstName}</Text>
                         </View>
+                        <TouchableOpacity style={styles.profileButton} onPress={() => router.push('/(tabs)/settings')}>
+                            <View style={styles.avatarSmall}>
+                                <Text style={styles.avatarTextSmall}>{firstName.charAt(0)}</Text>
+                            </View>
+                        </TouchableOpacity>
                     </View>
 
                     <TouchableOpacity style={styles.newSaleButton} onPress={() => router.push('/sales/new')}>
-                        <Plus size={24} color="#203A43" style={{ marginRight: 8 }} />
-                        <Text style={styles.newSaleButtonText}>Nova Venda</Text>
+                        <View style={styles.iconCircle}>
+                            <Plus size={24} color={Colors.white} />
+                        </View>
+                        <Text style={styles.newSaleButtonText}>Iniciar Nova Venda</Text>
                     </TouchableOpacity>
                 </SafeAreaView>
-            </View>
+            </LinearGradient>
 
             <View style={styles.bodyContent}>
-                {/* Quick Actions */}
-                <View style={styles.quickActions}>
-                    <TouchableOpacity style={styles.actionButton} onPress={() => router.push('/clients/new')}>
-                        <Users size={24} color="#203A43" />
-                        <Text style={styles.actionText}>Novo Cliente</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.actionButton} onPress={() => router.push('/products/new')}>
-                        <Package size={24} color="#203A43" />
-                        <Text style={styles.actionText}>Novo Produto</Text>
-                    </TouchableOpacity>
-                </View>
 
-                {/* History Section */}
-                <View style={styles.historySection}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
-                        <History size={20} color="#4B5563" style={{ marginRight: 8 }} />
-                        <Text style={styles.sectionTitle}>Histórico Recente</Text>
-                    </View>
+                <FadeIn delay={100}>
+                    <AlertsSection alerts={alerts} />
+                </FadeIn>
 
-                    {/* Tabs */}
-                    <View style={styles.tabsContainer}>
-                        <TouchableOpacity
-                            style={[styles.tab, historyTab === 'ALL' && styles.activeTab]}
-                            onPress={() => setHistoryTab('ALL')}
-                        >
-                            <Text style={[styles.tabText, historyTab === 'ALL' && styles.activeTabText]}>Tudo</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={[styles.tab, historyTab === 'CASH' && styles.activeTab]}
-                            onPress={() => setHistoryTab('CASH')}
-                        >
-                            <Text style={[styles.tabText, historyTab === 'CASH' && styles.activeTabText]}>À Vista / Receb.</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={[styles.tab, historyTab === 'CREDIT' && styles.activeTab]}
-                            onPress={() => setHistoryTab('CREDIT')}
-                        >
-                            <Text style={[styles.tabText, historyTab === 'CREDIT' && styles.activeTabText]}>A Prazo</Text>
-                        </TouchableOpacity>
-                    </View>
+                <View style={{ height: 20 }} />
 
-                    {/* List */}
-                    <FlatList
-                        data={filteredHistory}
-                        keyExtractor={item => item.id}
-                        renderItem={renderItem}
-                        contentContainerStyle={{ paddingBottom: 20 }}
-                        refreshControl={<RefreshControl refreshing={loading} onRefresh={loadData} />}
-                        ListEmptyComponent={() => (
-                            <View style={{ padding: 20, alignItems: 'center' }}>
-                                <Text style={{ color: '#9CA3AF' }}>Nenhuma venda ou pagamento recente.</Text>
-                            </View>
-                        )}
-                        style={{ flex: 1 }}
+                <FadeIn delay={200}>
+                    <QuickActions />
+                </FadeIn>
+
+                <View style={{ height: 20 }} />
+
+                <FadeIn delay={300} style={{ flex: 1 }}>
+                    <HistorySection
+                        historyTab={historyTab}
+                        setHistoryTab={setHistoryTab}
+                        filteredHistory={filteredHistory}
+                        loading={loading}
+                        loadData={loadData}
+                        openPaymentModal={openPaymentModal}
+                        openEditModal={openEditModal}
                     />
-                </View>
+                </FadeIn>
+
             </View>
 
             {/* MODAL EDIÇÃO DE PAGAMENTO */}
@@ -428,9 +354,16 @@ export default function DashboardScreen() {
                     <View style={[styles.editModalContent, { maxHeight: 'auto' }]}>
                         <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 }}>
                             <Text style={styles.payModalTitle}>Editar Pagamento</Text>
-                            <TouchableOpacity onPress={() => setEditingPayment(null)}>
-                                <X size={24} color="#000" />
-                            </TouchableOpacity>
+                            <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
+                                {editingPayment && (
+                                    <TouchableOpacity onPress={() => ReceiptService.sharePaymentReceipt(editingPayment)}>
+                                        <FileText size={24} color={Colors.secondary} />
+                                    </TouchableOpacity>
+                                )}
+                                <TouchableOpacity onPress={() => setEditingPayment(null)}>
+                                    <X size={24} color={Colors.text.primary} />
+                                </TouchableOpacity>
+                            </View>
                         </View>
 
                         <Text style={{ marginBottom: 12, fontSize: 16 }}>{editingPayment?.clientName}</Text>
@@ -444,7 +377,7 @@ export default function DashboardScreen() {
                         />
 
                         <View style={{ flexDirection: 'row', gap: 12, marginTop: 24 }}>
-                            <TouchableOpacity style={[styles.saveEditBtn, { flex: 1, backgroundColor: '#EF4444' }]} onPress={handleDeletePayment}>
+                            <TouchableOpacity style={[styles.saveEditBtn, { flex: 1, backgroundColor: Colors.danger }]} onPress={handleDeletePayment}>
                                 <Text style={styles.saveEditText}>Excluir</Text>
                             </TouchableOpacity>
                             <TouchableOpacity style={[styles.saveEditBtn, { flex: 1 }]} onPress={handleSavePayment}>
@@ -459,7 +392,6 @@ export default function DashboardScreen() {
             <Modal visible={isEditModalOpen} transparent animationType="slide">
                 <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalOverlay}>
                     <View style={[styles.editModalContent, showProductList && { flex: 1, maxHeight: '95%' }]}>
-
                         {/* HEADER DO MODAL */}
                         <View style={styles.payModalHeader}>
                             <View>
@@ -470,28 +402,36 @@ export default function DashboardScreen() {
                                     <Text style={styles.subTitle}>{editingSale && new Date(editingSale.timestamp).toLocaleString('pt-BR')}</Text>
                                 )}
                             </View>
-                            <TouchableOpacity onPress={() => {
-                                if (showProductList) setShowProductList(false); // Voltar
-                                else setIsEditModalOpen(false); // Fechar
-                            }}>
-                                <X size={24} color="#6B7280" />
-                            </TouchableOpacity>
+                            <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
+                                {editingSale && (
+                                    <TouchableOpacity onPress={() => ReceiptService.shareReceipt(editingSale)}>
+                                        <FileText size={24} color={Colors.primary} />
+                                    </TouchableOpacity>
+                                )}
+                                <TouchableOpacity onPress={() => {
+                                    if (showProductList) setShowProductList(false); // Voltar
+                                    else setIsEditModalOpen(false); // Fechar
+                                }}>
+                                    <X size={24} color={Colors.text.secondary} />
+                                </TouchableOpacity>
+                            </View>
                         </View>
 
-                        {/* CONTEÚDO: LISTA DE PRODUTOS PARA ADICIONAR */}
+                        {/* CONTEÚDO */}
                         {showProductList ? (
                             <View style={{ flex: 1 }}>
                                 <View style={styles.searchBox}>
-                                    <Search size={20} color="#9CA3AF" style={{ marginRight: 8 }} />
+                                    <Search size={20} color={Colors.text.muted} style={{ marginRight: 8 }} />
                                     <TextInput
                                         style={styles.searchInput}
                                         placeholder="Buscar produto..."
                                         value={searchQuery}
                                         onChangeText={setSearchQuery}
                                         autoFocus
+                                        placeholderTextColor={Colors.text.muted}
                                     />
                                 </View>
-                                <FlatList
+                                <FlatList // Lista de produtos para adicionar
                                     data={filteredProducts}
                                     keyExtractor={item => item.id}
                                     renderItem={({ item }) => (
@@ -500,47 +440,48 @@ export default function DashboardScreen() {
                                                 <Text style={styles.productName}>{item.name}</Text>
                                                 <Text style={styles.productPrice}>R$ {item.price.toFixed(2)}</Text>
                                             </View>
-                                            <Plus size={20} color="#16A34A" />
+                                            <Plus size={20} color={Colors.secondary} />
                                         </TouchableOpacity>
                                     )}
                                     contentContainerStyle={{ paddingBottom: 20 }}
                                 />
                             </View>
                         ) : (
-                            // CONTEÚDO: LISTA DE ITENS DA VENDA A SER EDITADA
                             <>
-                                <ScrollView style={{ maxHeight: 300 }}>
-                                    {editedItems.map((item, index) => (
-                                        <View key={index} style={styles.editItemRow}>
-                                            <View style={{ flex: 1 }}>
-                                                <Text style={styles.editItemName}>{item.productName}</Text>
-                                                <View style={styles.editControls}>
-                                                    <TouchableOpacity onPress={() => updateItemQty(index, -1)} style={styles.qtyBtn}><Minus size={16} color="#374151" /></TouchableOpacity>
-                                                    <Text style={styles.qtyText}>{item.quantity}</Text>
-                                                    <TouchableOpacity onPress={() => updateItemQty(index, 1)} style={styles.qtyBtn}><Plus size={16} color="#374151" /></TouchableOpacity>
+                                <View style={{ flex: 1 }}>
+                                    {/* Wrapping in simple View/ScrollView as per basic logic */}
+                                    <ScrollView style={{ flex: 1 }}>
+                                        {editedItems.map((item, index) => (
+                                            <View key={index} style={styles.editItemRow}>
+                                                <View style={{ flex: 1 }}>
+                                                    <Text style={styles.editItemName}>{item.productName}</Text>
+                                                    <View style={styles.editControls}>
+                                                        <TouchableOpacity onPress={() => updateItemQty(index, -1)} style={styles.qtyBtn}><Minus size={16} color={Colors.text.secondary} /></TouchableOpacity>
+                                                        <Text style={styles.qtyText}>{item.quantity}</Text>
+                                                        <TouchableOpacity onPress={() => updateItemQty(index, 1)} style={styles.qtyBtn}><Plus size={16} color={Colors.text.secondary} /></TouchableOpacity>
+                                                    </View>
+                                                </View>
+                                                <View style={{ alignItems: 'flex-end' }}>
+                                                    <TouchableOpacity onPress={() => removeItem(index)}>
+                                                        <Trash2 size={18} color={Colors.danger} style={{ marginBottom: 8 }} />
+                                                    </TouchableOpacity>
+                                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                                        <Text style={{ color: Colors.text.muted, fontSize: 12 }}>Preço Un: </Text>
+                                                        <PriceInput
+                                                            value={item.unitPrice}
+                                                            onChange={(val) => updateItemPrice(index, val)}
+                                                        />
+                                                    </View>
+                                                    <Text style={styles.editItemTotal}>R$ {(item.unitPrice * item.quantity).toFixed(2)}</Text>
                                                 </View>
                                             </View>
-                                            <View style={{ alignItems: 'flex-end' }}>
-                                                <TouchableOpacity onPress={() => removeItem(index)}>
-                                                    <Trash2 size={18} color="#EF4444" style={{ marginBottom: 8 }} />
-                                                </TouchableOpacity>
-                                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                                    <Text style={{ color: '#6B7280', fontSize: 12 }}>Preço Un: </Text>
-                                                    <PriceInput
-                                                        value={item.unitPrice}
-                                                        onChange={(val) => updateItemPrice(index, val)}
-                                                    />
-                                                </View>
-                                                <Text style={styles.editItemTotal}>R$ {(item.unitPrice * item.quantity).toFixed(2)}</Text>
-                                            </View>
-                                        </View>
-                                    ))}
-
-                                    <TouchableOpacity style={styles.addItemBtn} onPress={() => setShowProductList(true)}>
-                                        <Plus size={20} color="#16A34A" style={{ marginRight: 8 }} />
-                                        <Text style={styles.addItemText}>Adicionar Item</Text>
-                                    </TouchableOpacity>
-                                </ScrollView>
+                                        ))}
+                                        <TouchableOpacity style={styles.addItemBtn} onPress={() => setShowProductList(true)}>
+                                            <Plus size={20} color={Colors.secondary} style={{ marginRight: 8 }} />
+                                            <Text style={styles.addItemText}>Adicionar Item</Text>
+                                        </TouchableOpacity>
+                                    </ScrollView>
+                                </View>
 
                                 <View style={styles.editFooter}>
                                     <View style={styles.discountRow}>
@@ -552,7 +493,7 @@ export default function DashboardScreen() {
                                         <PriceInput
                                             value={editedDiscount}
                                             onChange={setEditedDiscount}
-                                            style={{ width: 80, borderColor: '#ccc' }}
+                                            style={{ width: 80, borderColor: Colors.border }}
                                         />
                                     </View>
 
@@ -565,22 +506,20 @@ export default function DashboardScreen() {
                                         <Text style={styles.saveEditText}>Salvar Alterações</Text>
                                     </TouchableOpacity>
 
-                                    {/* BOTÃO DE RECEBER ESTA VENDA ESPECÍFICA */}
                                     {editingSale && editingSale.remainingBalance > 0 && (
                                         <TouchableOpacity
                                             style={styles.paySpecificBtn}
                                             onPress={handlePayFullSale}
                                         >
-                                            <CheckCircle size={18} color="#16A34A" style={{ marginRight: 8 }} />
+                                            <CheckCircle size={18} color={Colors.secondary} style={{ marginRight: 8 }} />
                                             <Text style={styles.paySpecificText}>
                                                 Receber Total (R$ {editingSale.remainingBalance.toFixed(2)})
                                             </Text>
                                         </TouchableOpacity>
                                     )}
 
-                                    {/* BOTÃO DE EXCLUIR */}
                                     <TouchableOpacity style={styles.deleteBtn} onPress={handleDeleteSale}>
-                                        <Trash2 size={18} color="#EF4444" style={{ marginRight: 8 }} />
+                                        <Trash2 size={18} color={Colors.danger} style={{ marginRight: 8 }} />
                                         <Text style={styles.deleteBtnText}>Excluir Venda</Text>
                                     </TouchableOpacity>
                                 </View>
@@ -596,227 +535,131 @@ export default function DashboardScreen() {
 const styles = StyleSheet.create({
     container: {
         flex: 1,
-        backgroundColor: '#F3F4F6',
+        backgroundColor: Colors.background,
     },
     headerContainer: {
-        backgroundColor: '#203A43',
-        paddingBottom: 20,
-        borderBottomLeftRadius: 30,
-        borderBottomRightRadius: 30,
-        paddingHorizontal: 20,
-        paddingTop: Platform.OS === 'android' ? 40 : 0,
-        elevation: 5,
+        paddingBottom: 30,
+        borderBottomLeftRadius: 24,
+        borderBottomRightRadius: 24,
+        paddingHorizontal: 24,
+        paddingTop: Platform.OS === 'android' ? 60 : 20,
         shadowColor: '#000',
-        shadowOpacity: 0.2,
-        shadowRadius: 5,
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.25,
+        shadowRadius: 15,
+        elevation: 8,
     },
     headerContent: {
-        marginBottom: 20,
-    },
-    welcomeText: {
-        fontSize: 28,
-        fontWeight: 'bold',
-        color: '#fff',
-    },
-    brandText: {
-        fontSize: 14,
-        color: '#A0AEC0',
-    },
-    newSaleButton: {
-        backgroundColor: '#fff',
         flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 30,
+    },
+    headerTextContainer: {
+        flex: 1,
+    },
+    welcomeLabel: {
+        fontSize: 16,
+        color: Colors.text.muted,
+        letterSpacing: 1,
+        textTransform: 'uppercase',
+        fontWeight: '500',
+        marginBottom: 4,
+    },
+    userNameText: {
+        fontSize: 32,
+        fontWeight: 'bold',
+        color: Colors.text.light,
+        letterSpacing: -0.5,
+    },
+    profileButton: {
+        padding: 4,
+    },
+    avatarSmall: {
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        backgroundColor: Colors.text.secondary,
         alignItems: 'center',
         justifyContent: 'center',
-        paddingVertical: 16,
-        borderRadius: 16,
+        borderWidth: 2,
+        borderColor: Colors.text.secondary,
+    },
+    avatarTextSmall: {
+        fontSize: 18,
+        color: Colors.white,
+        fontWeight: 'bold',
+    },
+    newSaleButton: {
+        backgroundColor: Colors.white,
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: 18,
+        paddingHorizontal: 24,
+        borderRadius: 24,
         shadowColor: '#000',
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
-        elevation: 3,
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.15,
+        shadowRadius: 12,
+        elevation: 6,
+        marginHorizontal: 4,
+    },
+    iconCircle: {
+        width: 36,
+        height: 36,
+        borderRadius: 18,
+        backgroundColor: Colors.primary,
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginRight: 16,
     },
     newSaleButtonText: {
         fontSize: 18,
-        fontWeight: 'bold',
-        color: '#203A43',
+        fontWeight: '800',
+        color: Colors.text.primary,
+        letterSpacing: 0.5,
     },
     bodyContent: {
         flex: 1,
-        padding: 20,
+        padding: 24,
     },
-    quickActions: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        marginBottom: 24,
-    },
-    actionButton: {
-        flex: 1,
-        backgroundColor: '#fff',
-        padding: 16,
-        borderRadius: 12,
-        alignItems: 'center',
-        marginHorizontal: 5,
-        shadowColor: '#000',
-        shadowOpacity: 0.05,
-        shadowRadius: 3,
-        elevation: 1,
-        borderWidth: 1,
-        borderColor: '#E5E7EB',
-    },
-    actionText: {
-        marginTop: 8,
-        fontSize: 14,
-        fontWeight: '600',
-        color: '#4B5563',
-    },
-    historySection: {
-        flex: 1,
-    },
-    sectionTitle: {
-        fontSize: 18,
-        fontWeight: 'bold',
-        color: '#374151',
-    },
-    tabsContainer: {
-        flexDirection: 'row',
-        backgroundColor: '#E5E7EB',
-        borderRadius: 8,
-        padding: 4,
-        marginBottom: 16,
-    },
-    tab: {
-        flex: 1,
-        paddingVertical: 8,
-        alignItems: 'center',
-        borderRadius: 6,
-    },
-    activeTab: {
-        backgroundColor: '#fff',
-        shadowColor: '#000',
-        shadowOpacity: 0.1,
-        shadowRadius: 2,
-        elevation: 1,
-    },
-    tabText: {
-        fontSize: 13,
-        color: '#6B7280',
-        fontWeight: '500',
-    },
-    activeTabText: {
-        color: '#203A43',
-        fontWeight: 'bold',
-    },
-    saleCard: {
-        backgroundColor: '#fff',
-        borderRadius: 12,
-        padding: 16,
-        marginBottom: 12,
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        shadowColor: '#000',
-        shadowOpacity: 0.05,
-        shadowRadius: 3,
-        elevation: 1,
-    },
-    saleCardLeft: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        flex: 1,
-    },
-    avatarPlaceholder: {
-        width: 40,
-        height: 40,
-        borderRadius: 20,
-        backgroundColor: '#E6FFFA',
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginRight: 12,
-    },
-    saleClientName: {
-        fontSize: 15,
-        fontWeight: 'bold',
-        color: '#1F2937',
-    },
-    saleInfo: {
-        fontSize: 12,
-        color: '#9CA3AF',
-        marginBottom: 2,
-    },
-    saleItemsText: {
-        fontSize: 12,
-        color: '#6B7280',
-        fontStyle: 'italic',
-    },
-    saleCardRight: {
-        alignItems: 'flex-end',
-    },
-    saleTotal: {
-        fontSize: 16,
-        fontWeight: 'bold',
-        color: '#1F2937',
-        marginBottom: 4,
-    },
-    statusBadge: {
-        paddingHorizontal: 8,
-        paddingVertical: 2,
-        borderRadius: 12,
-    },
-    statusBadgeCredit: {
-        backgroundColor: '#FEF2F2',
-    },
-    statusBadgeCash: {
-        backgroundColor: '#F0FDF4',
-    },
-    statusText: {
-        fontSize: 10,
-        fontWeight: 'bold',
-    },
-    statusTextCredit: {
-        color: '#EF4444',
-    },
-    statusTextCash: {
-        color: '#16A34A',
-    },
-    paymentCardBorder: {
-        borderWidth: 1,
-        borderColor: '#BBF7D0', // Green-200 like
-        backgroundColor: '#F0FDF4', // Green-50 like
-    },
-
-    // MODAL STYLES
+    // Modals Styles
     modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-    editModalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: '80%' },
-    payModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
-    payModalTitle: { fontSize: 20, fontWeight: 'bold', color: '#1F2937' },
-    subTitle: { fontSize: 12, color: '#9CA3AF' },
-    editItemRow: { flexDirection: 'row', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
-    editItemName: { fontSize: 16, fontWeight: 'bold', color: '#374151', marginBottom: 8 },
+    editModalContent: { backgroundColor: Colors.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, maxHeight: '90%' },
+    payModalTitle: { fontSize: 20, fontWeight: 'bold', color: Colors.text.primary },
+    payModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+    subTitle: { color: Colors.text.muted, fontSize: 13, marginTop: 4 },
+    saveEditBtn: { backgroundColor: Colors.primary, padding: 16, borderRadius: 12, alignItems: 'center', marginTop: 12 },
+    saveEditText: { color: Colors.white, fontWeight: 'bold', fontSize: 16 },
+    bigInput: { fontSize: 32, fontWeight: 'bold', color: Colors.text.primary, textAlign: 'center', paddingVertical: 20, borderBottomWidth: 1, borderColor: Colors.border },
+
+    // Additional styles for inner modal logic that wasn't extracted yet
+    searchBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.background, paddingHorizontal: 12, borderRadius: 12, height: 50, marginBottom: 16 },
+    searchInput: { flex: 1, height: '100%', fontSize: 16, color: Colors.text.primary },
+    productItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderColor: Colors.border },
+    productName: { fontSize: 16, fontWeight: 'bold', color: Colors.text.primary },
+    productPrice: { color: Colors.primary, fontWeight: '600' },
+
+    editItemRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 12, borderBottomWidth: 1, borderColor: Colors.border },
+    editItemName: { fontSize: 16, fontWeight: '600', color: Colors.text.primary, marginBottom: 8 },
     editControls: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-    qtyBtn: { backgroundColor: '#F3F4F6', padding: 8, borderRadius: 8 },
-    qtyText: { fontSize: 16, fontWeight: 'bold' },
-    priceInputSmall: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 4, paddingVertical: 2, paddingHorizontal: 8, width: 60, textAlign: 'center', fontSize: 14, fontWeight: 'bold' },
-    bigInput: { fontSize: 32, borderBottomWidth: 2, borderColor: '#203A43', paddingVertical: 8, textAlign: 'center', color: '#111', width: '100%' },
-    editItemTotal: { fontSize: 16, fontWeight: 'bold', color: '#203A43', marginTop: 4 },
-    editFooter: { marginTop: 20 },
-    discountRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-    discountLabel: { fontSize: 14, color: '#6B7280' },
-    totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, marginBottom: 8, borderTopWidth: 1, borderColor: '#E5E7EB', paddingTop: 12 },
-    totalLabel: { fontSize: 16, color: '#6B7280' },
-    totalValue: { fontSize: 24, fontWeight: 'bold', color: '#203A43' },
-    saveEditBtn: { backgroundColor: '#203A43', paddingVertical: 16, borderRadius: 12, alignItems: 'center' },
-    saveEditText: { color: '#FFF', fontWeight: 'bold', fontSize: 18 },
-    paySpecificBtn: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 12, paddingVertical: 14, borderRadius: 12, borderWidth: 1, borderColor: '#16A34A', backgroundColor: '#F0FDF4' },
-    paySpecificText: { color: '#16A34A', fontWeight: 'bold', fontSize: 16 },
+    qtyBtn: { padding: 4, backgroundColor: Colors.background, borderRadius: 8 },
+    qtyText: { fontSize: 16, fontWeight: 'bold', color: Colors.text.primary, minWidth: 20, textAlign: 'center' },
+    editItemTotal: { fontSize: 16, fontWeight: 'bold', color: Colors.text.primary, marginTop: 4 },
+    addItemBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 16, marginTop: 12, borderWidth: 1, borderColor: Colors.secondary, borderRadius: 8, borderStyle: 'dashed' },
+    addItemText: { color: Colors.secondary, fontWeight: '600' },
 
-    deleteBtn: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 12, paddingVertical: 14, borderRadius: 12, borderWidth: 1, borderColor: '#EF4444', backgroundColor: '#FEF2F2' },
-    deleteBtnText: { color: '#EF4444', fontWeight: 'bold', fontSize: 16 },
+    editFooter: { marginTop: 20, borderTopWidth: 1, borderColor: Colors.border, paddingTop: 20 },
+    discountRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+    discountLabel: { fontSize: 14, color: Colors.text.secondary },
+    totalLabel: { fontSize: 16, fontWeight: 'bold', color: Colors.text.primary },
+    totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginVertical: 12 },
+    totalValue: { fontSize: 24, fontWeight: 'bold', color: Colors.primary },
 
-    // Add Item Styles
-    searchBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F3F4F6', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, marginBottom: 16 },
-    searchInput: { flex: 1, fontSize: 16, color: '#1F2937' },
-    productItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
-    productName: { fontSize: 16, fontWeight: 'bold', color: '#1F2937' },
-    productPrice: { fontSize: 14, color: '#16A34A', fontWeight: '600' },
-    addItemBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 12, marginTop: 16, backgroundColor: '#F0FDF4', borderRadius: 8, borderWidth: 1, borderColor: '#16A34A', borderStyle: 'dashed' },
-    addItemText: { color: '#16A34A', fontWeight: 'bold', fontSize: 14 }
+    paySpecificBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 16, marginTop: 12, backgroundColor: Colors.secondaryLight, borderRadius: 12 },
+    paySpecificText: { color: Colors.secondary, fontWeight: 'bold' },
+    deleteBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 16, marginTop: 24 },
+    deleteBtnText: { color: Colors.danger, fontWeight: 'bold' },
+
+    priceInputSmall: { minWidth: 60, textAlign: 'right', fontSize: 14, color: Colors.text.primary, fontWeight: 'bold', borderBottomWidth: 1, borderColor: Colors.text.muted, padding: 0 }
 });

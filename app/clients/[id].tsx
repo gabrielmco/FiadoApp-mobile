@@ -13,87 +13,20 @@ import {
     Alert,
     KeyboardAvoidingView,
     ScrollView,
-    RefreshControl
+    RefreshControl,
+    Linking
 } from 'react-native';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
-import { ArrowLeft, Wallet, DollarSign, Calendar, ShoppingBag, X, Plus, Minus, Trash2, CheckCircle } from 'lucide-react-native';
+import { ArrowLeft, Wallet, DollarSign, Calendar, ShoppingBag, X, Plus, Minus, Trash2, CheckCircle, Pencil, MessageCircle, FileText } from 'lucide-react-native';
 import { db } from '../../services/db';
+import { ReceiptService } from '../../services/receipt';
 import { Client, Sale, PaymentRecord } from '../../types';
+import { Colors } from '../../constants/colors';
 
 // --- ITEM DA LISTA (Pode ser Venda ou Pagamento) ---
-const TransactionItem = memo(({ item, onEdit }: { item: any, onEdit: (s: Sale) => void }) => {
-
-    // Se for um PAGAMENTO (Tem 'amount' mas não 'items')
-    if (item.amount !== undefined && !item.items) {
-        return (
-            <View style={styles.paymentItem}>
-                <View style={styles.saleHeader}>
-                    <View style={styles.saleDateContainer}>
-                        <Calendar size={14} color="#16A34A" />
-                        <Text style={[styles.saleDate, { color: '#16A34A' }]}>
-                            {new Date(item.timestamp).toLocaleDateString('pt-BR')}
-                        </Text>
-                        <Text style={[styles.saleTime, { color: '#16A34A' }]}>
-                            {new Date(item.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                        </Text>
-                    </View>
-                    <Text style={styles.paymentValue}>+ R$ {item.amount.toFixed(2)}</Text>
-                </View>
-                <View style={styles.paymentBadge}>
-                    <CheckCircle size={12} color="#16A34A" />
-                    <Text style={styles.paymentBadgeText}>PAGAMENTO RECEBIDO</Text>
-                </View>
-            </View>
-        );
-    }
-
-    // Se for uma VENDA
-    const sale = item as Sale;
-    const progress = sale.finalTotal > 0
-        ? ((sale.finalTotal - sale.remainingBalance) / sale.finalTotal) * 100
-        : 100;
-
-    return (
-        <TouchableOpacity
-            style={styles.saleItem}
-            onPress={() => onEdit(sale)}
-            activeOpacity={0.7}
-        >
-            <View style={styles.saleHeader}>
-                <View style={styles.saleDateContainer}>
-                    <Calendar size={14} color="#9CA3AF" />
-                    <Text style={styles.saleDate}>
-                        {new Date(sale.timestamp).toLocaleDateString('pt-BR')}
-                    </Text>
-                    <Text style={styles.saleTime}>
-                        {new Date(sale.timestamp).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-                    </Text>
-                </View>
-                <Text style={styles.saleTotalValue}>R$ {sale.finalTotal.toFixed(2)}</Text>
-            </View>
-
-            <Text style={styles.saleItemsText} numberOfLines={2}>
-                {sale.items.map(i => `${i.quantity}x ${i.productName}`).join(', ')}
-            </Text>
-
-            {sale.remainingBalance > 0 ? (
-                <View style={styles.progressContainer}>
-                    <View style={styles.progressBarBg}>
-                        <View style={[styles.progressBarFill, { width: `${progress}%` }]} />
-                    </View>
-                    <View style={styles.progressLabels}>
-                        <Text style={styles.paidLabel}>Pago: R$ {(sale.finalTotal - sale.remainingBalance).toFixed(2)}</Text>
-                        <Text style={styles.remainingLabel}>Resta: R$ {sale.remainingBalance.toFixed(2)}</Text>
-                    </View>
-                </View>
-            ) : (
-                <View style={styles.paidBadge}>
-                    <Text style={styles.paidBadgeText}>QUITADO</Text>
-                </View>
-            )}
-        </TouchableOpacity>
-    );
-});
+// Extracted to components/clients/TransactionItem.tsx
+import { TransactionItem } from '../../components/clients/TransactionItem';
+import { ScreenHeader } from '../../components/ui/ScreenHeader';
 
 export default function ClientDetailsScreen() {
     const { id } = useLocalSearchParams();
@@ -114,10 +47,94 @@ export default function ClientDetailsScreen() {
     const [payAmount, setPayAmount] = useState('');
     const [processingPayment, setProcessingPayment] = useState(false);
 
-    // Modal Edição
+    // Modal Edição Venda
     const [isEditModalOpen, setIsEditModalOpen] = useState(false);
     const [editingSale, setEditingSale] = useState<Sale | null>(null);
     const [editedItems, setEditedItems] = useState<any[]>([]);
+
+    // Modal Edição Cliente
+    const [isClientEditModalOpen, setIsClientEditModalOpen] = useState(false);
+    const [clientEditData, setClientEditData] = useState<{
+        name: string;
+        cpf: string;
+        phone: string;
+        address: string;
+        neighborhood: string;
+        nextPaymentDate?: string;
+    }>({ name: '', cpf: '', phone: '', address: '', neighborhood: '' });
+
+
+
+    const openClientEditModal = () => {
+        if (!client) return;
+        setClientEditData({
+            name: client.name,
+            cpf: client.cpf || '',
+            phone: client.phone || '',
+            address: client.address || '',
+            neighborhood: client.neighborhood || '',
+            nextPaymentDate: client.nextPaymentDate
+        });
+        setIsClientEditModalOpen(true);
+    };
+
+    const handleUpdateClient = async () => {
+        if (!client || !clientEditData.name.trim()) {
+            Alert.alert("Erro", "Nome é obrigatório.");
+            return;
+        }
+        try {
+            await db.updateClient({
+                id: client.id,
+                name: clientEditData.name,
+                cpf: clientEditData.cpf || undefined,
+                phone: clientEditData.phone || undefined,
+                address: clientEditData.address || undefined,
+                neighborhood: clientEditData.neighborhood || undefined,
+                nextPaymentDate: clientEditData.nextPaymentDate
+            });
+            Alert.alert("Sucesso", "Dados atualizados!");
+            setIsClientEditModalOpen(false);
+            fetchData(true);
+        } catch (e) {
+            Alert.alert("Erro", "Falha ao atualizar cliente.");
+        }
+    };
+
+    const handleDeleteClient = () => {
+        if (!client) return;
+
+        if (client.totalDebt > 0) {
+            Alert.alert(
+                "Não é possível excluir",
+                `Este cliente possui uma dívida de R$ ${client.totalDebt.toFixed(2)}. É necessário quitar o débito antes de excluir o cadastro.`
+            );
+            return;
+        }
+
+        Alert.alert(
+            "Excluir Cliente",
+            "Tem certeza que deseja excluir este cliente? Todo o histórico de vendas e pagamentos será apagado permanentemente.",
+            [
+                { text: "Cancelar", style: "cancel" },
+                {
+                    text: "Excluir",
+                    style: "destructive",
+                    onPress: async () => {
+                        try {
+                            setInitialLoading(true);
+                            await db.deleteClient(client.id);
+                            router.replace('/(tabs)/clients');
+                        } catch (e) {
+                            console.error(e);
+                            Alert.alert("Erro", "Falha ao excluir cliente.");
+                            setInitialLoading(false);
+                        }
+                    }
+                }
+            ]
+        );
+    };
 
     const fetchData = useCallback(async (isRefresh = false) => {
         if (!id) return;
@@ -271,20 +288,40 @@ export default function ClientDetailsScreen() {
 
     if (!client) return null;
 
+    // --- COMPARTILHAR ---
+    const shareClientReport = async () => {
+        if (!client) return;
+        const message = `Relatório do Cliente: *${client.name}*\n` +
+            `Débito Total: R$ ${client.totalDebt.toFixed(2)}\n` +
+            `Crédito Disponível: R$ ${client.credit.toFixed(2)}`;
+
+        Linking.openURL(`whatsapp://send?text=${encodeURIComponent(message)}`);
+    };
+
     return (
         <View style={styles.container}>
-            <SafeAreaView style={{ backgroundColor: '#fff' }}>
-                <View style={styles.header}>
-                    <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-                        <ArrowLeft size={24} color="#1F2937" />
-                    </TouchableOpacity>
-                    <Text style={styles.headerTitle}>Carteira do Cliente</Text>
-                    <View style={{ width: 24 }} />
-                </View>
-            </SafeAreaView>
+            {/* Header */}
+            <ScreenHeader
+                title="Detalhes do Cliente"
+                rightAction={
+                    <View style={{ flexDirection: 'row', gap: 12 }}>
+                        <TouchableOpacity onPress={handleDeleteClient}>
+                            <Trash2 size={24} color={Colors.danger} />
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={openClientEditModal}>
+                            <Pencil size={24} color={Colors.primary} />
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={shareClientReport}>
+                            <FileText size={24} color={Colors.secondary} />
+                        </TouchableOpacity>
+                    </View>
+                }
+            />
 
-            <View style={styles.content}>
-                <Text style={styles.clientNameHeader}>{client.name}</Text>
+            <View style={{ flex: 1 }}>
+                <View style={styles.nameRow}>
+                    <Text style={styles.clientNameHeader}>{client?.name}</Text>
+                </View>
 
                 <View style={styles.heroCard}>
                     <View style={styles.cardBgIcon}>
@@ -307,10 +344,76 @@ export default function ClientDetailsScreen() {
                     </View>
                 </View>
 
-                <TouchableOpacity style={styles.paymentButton} onPress={() => setIsPayModalOpen(true)}>
-                    <DollarSign size={20} color="#16A34A" style={{ marginRight: 8 }} />
-                    <Text style={styles.paymentButtonText}>Registrar Pagamento</Text>
-                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', gap: 12, marginHorizontal: 20, marginTop: 20 }}>
+                    <TouchableOpacity style={[styles.paymentButton, { flex: 1, marginTop: 0, marginHorizontal: 0 }]} onPress={() => setIsPayModalOpen(true)}>
+                        <DollarSign size={20} color="#16A34A" style={{ marginRight: 8 }} />
+                        <Text style={styles.paymentButtonText}>Pagar</Text>
+                    </TouchableOpacity>
+
+                    {client.totalDebt > 0 && (
+                        <TouchableOpacity
+                            style={[styles.paymentButton, { flex: 1, marginTop: 0, marginHorizontal: 0, borderColor: '#203A43', backgroundColor: '#203A43' }]}
+                            onPress={async () => {
+                                // 1. Check Phone
+                                let phone = client.phone ? client.phone.replace(/\D/g, '') : '';
+
+                                if (!phone || phone.length < 10) {
+                                    Alert.alert(
+                                        "Sem Telefone",
+                                        "Este cliente não possui um telefone válido cadastrado. Deseja adicionar agora?",
+                                        [
+                                            { text: "Cancelar", style: "cancel" },
+                                            {
+                                                text: "Adicionar",
+                                                onPress: openClientEditModal // Uses existing edit modal
+                                            }
+                                        ]
+                                    );
+                                    return;
+                                }
+
+                                // 2. Find Oldest Unpaid Sale for Context
+                                try {
+                                    const clientSales = await db.getClientSales(client.id);
+                                    const unpaidSales = clientSales.filter(s => s.remainingBalance > 0);
+                                    unpaidSales.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+                                    const oldestSale = unpaidSales[0];
+                                    const purchaseDate = oldestSale ? new Date(oldestSale.timestamp).toLocaleDateString('pt-BR') : 'data desconhecida';
+
+                                    const dueDateObj = new Date(oldestSale ? oldestSale.timestamp : new Date());
+                                    dueDateObj.setDate(dueDateObj.getDate() + 30);
+                                    const dueDate = dueDateObj.toLocaleDateString('pt-BR');
+
+                                    const message = `Olá *${client.name}*! 👋
+
+Consta em nosso sistema uma pendência de *${client.totalDebt.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}*.
+
+Referente à compra do dia *${purchaseDate}* (Vencimento: *${dueDate}*).
+
+Podemos agendar o pagamento?
+
+_Mensagem automática - Gestor de Vendas_`;
+
+                                    if (phone.length <= 11) phone = '55' + phone;
+                                    const url = `whatsapp://send?phone=${phone}&text=${encodeURIComponent(message)}`;
+
+                                    const supported = await Linking.canOpenURL(url);
+                                    if (supported) {
+                                        await Linking.openURL(url);
+                                    } else {
+                                        Alert.alert("Erro", "WhatsApp não está instalado.");
+                                    }
+                                } catch (e) {
+                                    Alert.alert("Erro", "Falha ao gerar cobrança.");
+                                }
+                            }}
+                        >
+                            <MessageCircle size={20} color="#FFF" style={{ marginRight: 8 }} />
+                            <Text style={[styles.paymentButtonText, { color: '#FFF' }]}>Cobrar</Text>
+                        </TouchableOpacity>
+                    )}
+                </View>
 
                 <View style={styles.tabs}>
                     <TouchableOpacity style={[styles.tab, activeTab === 'PENDING' && styles.activeTab]} onPress={() => setActiveTab('PENDING')}>
@@ -325,7 +428,7 @@ export default function ClientDetailsScreen() {
                 <FlatList
                     data={displayList}
                     keyExtractor={item => item.id}
-                    renderItem={({ item }) => <TransactionItem item={item} onEdit={openEditModal} />}
+                    renderItem={({ item }) => <TransactionItem item={item} onEdit={openEditModal} clientName={client.name} />}
                     contentContainerStyle={styles.listContent}
                     refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
                     initialNumToRender={10}
@@ -376,9 +479,16 @@ export default function ClientDetailsScreen() {
                                 <Text style={styles.payModalTitle}>Editar Venda</Text>
                                 <Text style={styles.subTitle}>{editingSale && new Date(editingSale.timestamp).toLocaleString('pt-BR')}</Text>
                             </View>
-                            <TouchableOpacity onPress={() => setIsEditModalOpen(false)}>
-                                <X size={24} color="#6B7280" />
-                            </TouchableOpacity>
+                            <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
+                                {editingSale && (
+                                    <TouchableOpacity onPress={() => ReceiptService.shareReceipt(editingSale)}>
+                                        <FileText size={24} color="#203A43" />
+                                    </TouchableOpacity>
+                                )}
+                                <TouchableOpacity onPress={() => setIsEditModalOpen(false)}>
+                                    <X size={24} color="#6B7280" />
+                                </TouchableOpacity>
+                            </View>
                         </View>
 
                         <ScrollView style={{ maxHeight: 300 }}>
@@ -437,116 +547,153 @@ export default function ClientDetailsScreen() {
                     </View>
                 </KeyboardAvoidingView>
             </Modal>
+
+            {/* MODAL EDIÇÃO CLIENTE */}
+            <Modal visible={isClientEditModalOpen} transparent animationType="slide">
+                <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalOverlay}>
+                    <View style={styles.editModalContent}>
+                        <View style={styles.payModalHeader}>
+                            <Text style={styles.payModalTitle}>Editar Cliente</Text>
+                            <TouchableOpacity onPress={() => setIsClientEditModalOpen(false)}>
+                                <X size={24} color="#6B7280" />
+                            </TouchableOpacity>
+                        </View>
+
+                        <ScrollView>
+                            <View style={{ gap: 16 }}>
+                                <View>
+                                    <Text style={styles.payLabel}>Nome</Text>
+                                    <TextInput style={styles.input} value={clientEditData.name} onChangeText={t => setClientEditData({ ...clientEditData, name: t })} />
+                                </View>
+                                <View>
+                                    <Text style={styles.payLabel}>CPF</Text>
+                                    <TextInput style={styles.input} value={clientEditData.cpf} onChangeText={t => setClientEditData({ ...clientEditData, cpf: t })} keyboardType="numeric" />
+                                </View>
+                                <View>
+                                    <Text style={styles.payLabel}>Telefone</Text>
+                                    <TextInput style={styles.input} value={clientEditData.phone} onChangeText={t => setClientEditData({ ...clientEditData, phone: t })} keyboardType="phone-pad" />
+                                </View>
+                                <View>
+                                    <Text style={styles.payLabel}>Endereço</Text>
+                                    <TextInput style={styles.input} value={clientEditData.address} onChangeText={t => setClientEditData({ ...clientEditData, address: t })} />
+                                </View>
+                                <View>
+                                    <Text style={styles.payLabel}>Bairro</Text>
+                                    <TextInput style={styles.input} value={clientEditData.neighborhood} onChangeText={t => setClientEditData({ ...clientEditData, neighborhood: t })} />
+                                </View>
+                            </View>
+                        </ScrollView>
+
+                        <TouchableOpacity style={[styles.confirmPayBtn, { marginTop: 24 }]} onPress={handleUpdateClient}>
+                            <Text style={styles.confirmPayText}>Salvar Alterações</Text>
+                        </TouchableOpacity>
+                    </View>
+                </KeyboardAvoidingView>
+            </Modal>
         </View>
     );
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#F9FAFB' },
+    container: { flex: 1, backgroundColor: Colors.background },
     loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 
-    header: {
-        flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-        paddingHorizontal: 20, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F3F4F6',
-        paddingTop: Platform.OS === 'android' ? 40 : 12,
-    },
-    backButton: { padding: 8, marginLeft: -8 },
-    headerTitle: { fontSize: 18, fontWeight: '600', color: '#1F2937' },
-
-    content: { flex: 1 },
-    clientNameHeader: { fontSize: 24, fontWeight: 'bold', color: '#111827', marginHorizontal: 20, marginTop: 20, marginBottom: 16 },
+    nameRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginHorizontal: 20, marginTop: 20, marginBottom: 16 },
+    clientNameHeader: { fontSize: 24, fontWeight: 'bold', color: Colors.text.primary, flex: 1 },
+    editClientBtn: { padding: 8, backgroundColor: Colors.background, borderRadius: 8 },
+    input: { backgroundColor: Colors.text.light, borderWidth: 1, borderColor: Colors.border, borderRadius: 8, padding: 12, fontSize: 16, color: Colors.text.primary },
 
     heroCard: {
-        backgroundColor: '#0F2027',
+        backgroundColor: Colors.primaryDark,
         marginHorizontal: 20, borderRadius: 16, padding: 24, minHeight: 140,
         justifyContent: 'space-between', overflow: 'hidden', position: 'relative',
-        shadowColor: '#0F2027', shadowOpacity: 0.3, shadowRadius: 8, elevation: 5
+        shadowColor: Colors.primaryDark, shadowOpacity: 0.3, shadowRadius: 8, elevation: 5
     },
     cardBgIcon: { position: 'absolute', right: -20, bottom: -20 },
-    heroLabel: { color: '#94A3B8', fontSize: 14, fontWeight: '500', marginBottom: 4 },
-    heroValue: { color: '#FFF', fontSize: 36, fontWeight: 'bold' },
+    heroLabel: { color: Colors.text.muted, fontSize: 14, fontWeight: '500', marginBottom: 4 },
+    heroValue: { color: Colors.white, fontSize: 36, fontWeight: 'bold' },
     heroFooter: { marginTop: 12 },
     creditTag: {
         backgroundColor: 'rgba(37, 99, 235, 0.2)', alignSelf: 'flex-start',
         paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: 'rgba(37, 99, 235, 0.5)',
     },
-    creditTagText: { color: '#60A5FA', fontSize: 12, fontWeight: '600' },
+    creditTagText: { color: '#60A5FA', fontSize: 12, fontWeight: '600' }, // Keeping this as is for now or use Colors.info
 
     paymentButton: {
         flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-        marginHorizontal: 20, marginTop: 20, backgroundColor: '#fff',
-        paddingVertical: 14, borderRadius: 12, borderWidth: 1.5, borderColor: '#16A34A',
+        marginHorizontal: 20, marginTop: 20, backgroundColor: Colors.white,
+        paddingVertical: 14, borderRadius: 12, borderWidth: 1.5, borderColor: Colors.secondary,
         elevation: 2
     },
-    paymentButtonText: { fontSize: 16, fontWeight: 'bold', color: '#16A34A' },
+    paymentButtonText: { fontSize: 16, fontWeight: 'bold', color: Colors.secondary },
 
-    tabs: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#E5E7EB', marginTop: 24 },
+    tabs: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: Colors.border, marginTop: 24 },
     tab: { flex: 1, alignItems: 'center', paddingVertical: 12, borderBottomWidth: 2, borderBottomColor: 'transparent' },
-    activeTab: { borderBottomColor: '#203A43' },
-    tabText: { fontSize: 14, fontWeight: '500', color: '#6B7280' },
-    activeTabText: { color: '#203A43', fontWeight: 'bold' },
+    activeTab: { borderBottomColor: Colors.primary },
+    tabText: { fontSize: 14, fontWeight: '500', color: Colors.text.secondary },
+    activeTabText: { color: Colors.primary, fontWeight: 'bold' },
 
     listContent: { padding: 20, paddingBottom: 50 },
-    saleItem: { backgroundColor: '#FFF', borderRadius: 12, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: '#F3F4F6' },
+    saleItem: { backgroundColor: Colors.white, borderRadius: 12, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: Colors.background },
 
     // Estilos de Pagamento
-    paymentItem: { backgroundColor: '#F0FDF4', borderRadius: 12, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: '#DCFCE7' },
-    paymentValue: { fontSize: 16, fontWeight: 'bold', color: '#16A34A' },
+    paymentItem: { backgroundColor: Colors.secondaryLight, borderRadius: 12, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: Colors.secondaryLight },
+    paymentValue: { fontSize: 16, fontWeight: 'bold', color: Colors.secondary },
     paymentBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8 },
-    paymentBadgeText: { fontSize: 12, fontWeight: 'bold', color: '#16A34A' },
+    paymentBadgeText: { fontSize: 12, fontWeight: 'bold', color: Colors.secondary },
 
     saleHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
     saleDateContainer: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-    saleDate: { fontSize: 12, color: '#9CA3AF' },
-    saleTime: { fontSize: 12, color: '#9CA3AF', marginLeft: 4 },
+    saleDate: { fontSize: 12, color: Colors.text.muted },
+    saleTime: { fontSize: 12, color: Colors.text.muted, marginLeft: 4 },
     saleTotalValue: { fontSize: 16, fontWeight: 'bold', color: '#111' },
-    saleItemsText: { fontSize: 14, color: '#4B5563', marginBottom: 12 },
+    saleItemsText: { fontSize: 14, color: Colors.text.secondary, marginBottom: 12 },
 
     progressContainer: { marginTop: 8 },
-    progressBarBg: { height: 6, backgroundColor: '#E5E7EB', borderRadius: 3, overflow: 'hidden' },
-    progressBarFill: { height: '100%', backgroundColor: '#16A34A' },
+    progressBarBg: { height: 6, backgroundColor: Colors.border, borderRadius: 3, overflow: 'hidden' },
+    progressBarFill: { height: '100%', backgroundColor: Colors.secondary },
     progressLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 4 },
-    paidLabel: { fontSize: 10, color: '#16A34A', fontWeight: 'bold' },
-    remainingLabel: { fontSize: 10, color: '#EF4444', fontWeight: 'bold' },
+    paidLabel: { fontSize: 10, color: Colors.secondary, fontWeight: 'bold' },
+    remainingLabel: { fontSize: 10, color: Colors.danger, fontWeight: 'bold' },
 
-    paidBadge: { alignSelf: 'flex-start', backgroundColor: '#F0FDF4', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, marginTop: 4 },
-    paidBadgeText: { color: '#16A34A', fontSize: 10, fontWeight: 'bold' },
+    paidBadge: { alignSelf: 'flex-start', backgroundColor: Colors.secondaryLight, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, marginTop: 4 },
+    paidBadgeText: { color: Colors.secondary, fontSize: 10, fontWeight: 'bold' },
 
     emptyState: { alignItems: 'center', paddingVertical: 40 },
-    emptyText: { color: '#9CA3AF', marginTop: 8 },
+    emptyText: { color: Colors.text.muted, marginTop: 8 },
 
     // Modais
     modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-    payModalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24 },
+    payModalContent: { backgroundColor: Colors.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24 },
     payModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
-    payModalTitle: { fontSize: 20, fontWeight: 'bold', color: '#1F2937' },
-    payLabel: { fontSize: 16, color: '#374151', marginBottom: 12 },
-    payInput: { fontSize: 32, fontWeight: 'bold', color: '#203A43', borderBottomWidth: 2, borderBottomColor: '#203A43', paddingVertical: 8, marginBottom: 24, textAlign: 'center' },
+    payModalTitle: { fontSize: 20, fontWeight: 'bold', color: Colors.text.primary },
+    payLabel: { fontSize: 16, color: Colors.text.secondary, marginBottom: 12 },
+    payInput: { fontSize: 32, fontWeight: 'bold', color: Colors.primary, borderBottomWidth: 2, borderBottomColor: Colors.primary, paddingVertical: 8, marginBottom: 24, textAlign: 'center' },
 
     quickButtons: { flexDirection: 'row', justifyContent: 'center', gap: 12, marginBottom: 24 },
-    quickBtn: { backgroundColor: '#F3F4F6', paddingVertical: 10, paddingHorizontal: 16, borderRadius: 8 },
-    quickBtnText: { color: '#4B5563', fontWeight: 'bold' },
+    quickBtn: { backgroundColor: Colors.background, paddingVertical: 10, paddingHorizontal: 16, borderRadius: 8 },
+    quickBtnText: { color: Colors.text.secondary, fontWeight: 'bold' },
 
-    confirmPayBtn: { backgroundColor: '#16A34A', paddingVertical: 16, borderRadius: 12, alignItems: 'center' },
-    confirmPayText: { color: '#FFF', fontWeight: 'bold', fontSize: 18 },
+    confirmPayBtn: { backgroundColor: Colors.secondary, paddingVertical: 16, borderRadius: 12, alignItems: 'center' },
+    confirmPayText: { color: Colors.white, fontWeight: 'bold', fontSize: 18 },
 
-    editModalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: '80%' },
-    subTitle: { fontSize: 12, color: '#9CA3AF' },
-    editItemRow: { flexDirection: 'row', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
-    editItemName: { fontSize: 16, fontWeight: 'bold', color: '#374151', marginBottom: 8 },
+    editModalContent: { backgroundColor: Colors.white, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, maxHeight: '80%' },
+    subTitle: { fontSize: 12, color: Colors.text.muted },
+    editItemRow: { flexDirection: 'row', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.background },
+    editItemName: { fontSize: 16, fontWeight: 'bold', color: Colors.text.secondary, marginBottom: 8 },
     editControls: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-    qtyBtn: { backgroundColor: '#F3F4F6', padding: 8, borderRadius: 8 },
+    qtyBtn: { backgroundColor: Colors.background, padding: 8, borderRadius: 8 },
     qtyText: { fontSize: 16, fontWeight: 'bold' },
-    priceInputSmall: { backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 4, paddingVertical: 2, paddingHorizontal: 8, width: 60, textAlign: 'center', fontSize: 14, fontWeight: 'bold' },
-    editItemTotal: { fontSize: 16, fontWeight: 'bold', color: '#203A43', marginTop: 4 },
+    priceInputSmall: { backgroundColor: Colors.text.light, borderWidth: 1, borderColor: Colors.border, borderRadius: 4, paddingVertical: 2, paddingHorizontal: 8, width: 60, textAlign: 'center', fontSize: 14, fontWeight: 'bold' },
+    editItemTotal: { fontSize: 16, fontWeight: 'bold', color: Colors.primary, marginTop: 4 },
     editFooter: { marginTop: 20 },
     totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-    totalLabel: { fontSize: 16, color: '#6B7280' },
-    totalValue: { fontSize: 24, fontWeight: 'bold', color: '#203A43' },
-    disclaimer: { fontSize: 12, color: '#9CA3AF', textAlign: 'center', marginBottom: 16 },
-    saveEditBtn: { backgroundColor: '#203A43', paddingVertical: 16, borderRadius: 12, alignItems: 'center' },
-    saveEditText: { color: '#FFF', fontWeight: 'bold', fontSize: 18 },
+    totalLabel: { fontSize: 16, color: Colors.text.muted },
+    totalValue: { fontSize: 24, fontWeight: 'bold', color: Colors.primary },
+    disclaimer: { fontSize: 12, color: Colors.text.muted, textAlign: 'center', marginBottom: 16 },
+    saveEditBtn: { backgroundColor: Colors.primary, paddingVertical: 16, borderRadius: 12, alignItems: 'center' },
+    saveEditText: { color: Colors.white, fontWeight: 'bold', fontSize: 18 },
 
-    paySpecificBtn: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 12, paddingVertical: 14, borderRadius: 12, borderWidth: 1, borderColor: '#16A34A', backgroundColor: '#F0FDF4' },
-    paySpecificText: { color: '#16A34A', fontWeight: 'bold', fontSize: 16 }
+    paySpecificBtn: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 12, paddingVertical: 14, borderRadius: 12, borderWidth: 1, borderColor: Colors.secondary, backgroundColor: Colors.secondaryLight },
+    paySpecificText: { color: Colors.secondary, fontWeight: 'bold', fontSize: 16 }
 });

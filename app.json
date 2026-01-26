@@ -4,12 +4,12 @@
     "slug": "gestor-de-vendas-simplificado",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/images/icon.png",
     "userInterfaceStyle": "light",
     "splash": {
-      "image": "./assets/splash.png",
+      "image": "./assets/images/icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#203a43"
     },
     "assetBundlePatterns": [
       "**/*"
@@ -19,7 +19,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/images/icon.png",
         "backgroundColor": "#ffffff"
       },
       "package": "com.gabrielmco.gestordevendas"
@@ -30,8 +30,21 @@
     },
     "plugins": [
       "expo-router",
-      "expo-font"
+      "expo-font",
+      "@react-native-community/datetimepicker",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Permitir $(PRODUCT_NAME) acessar a câmera para escanear códigos de barras"
+        }
+      ]
     ],
-    "scheme": "gestor-de-vendas"
+    "scheme": "gestor-de-vendas",
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "2e72a58a-8b0a-400c-b5eb-307b6366ed6a"
+      }
+    }
   }
 }

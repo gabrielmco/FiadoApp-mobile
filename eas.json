@@ -1,0 +1,14 @@
+{
+    "build": {
+        "preview": {
+            "android": {
+                "buildType": "apk"
+            },
+            "env": {
+                "EXPO_PUBLIC_SUPABASE_URL": "https://csmzuqyzundznbfwdvwd.supabase.co",
+                "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_PDQDrUhlqBlpWZ3-R0-P8A_EYcWMhpz"
+            }
+        },
+        "production": {}
+    }
+}

@@ -11,12 +11,17 @@ import {
     Alert,
     Modal,
     KeyboardAvoidingView,
-    ActivityIndicator
+    ActivityIndicator,
+    Switch
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { Search, Plus, ShoppingCart, ArrowRight, X, Trash2, User, Filter, Minus, Check, Tag } from 'lucide-react-native';
+import { Search, Plus, ShoppingCart, ArrowRight, X, Trash2, User, Filter, Minus, Check, Tag, Scan } from 'lucide-react-native';
 import { db } from '../../services/db';
 import { Product, CartItem, Client } from '../../types';
+import NetInfo from '@react-native-community/netinfo';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import { ScreenHeader } from '../../components/ui/ScreenHeader';
+import { Colors } from '../../constants/colors';
 
 export default function NewSaleScreen() {
     const router = useRouter();
@@ -27,7 +32,13 @@ export default function NewSaleScreen() {
     const [loading, setLoading] = useState(true);
 
     const [saleType, setSaleType] = useState<'CASH' | 'CREDIT'>('CASH');
+    const [paymentMethod, setPaymentMethod] = useState<'MONEY' | 'PIX' | 'CREDIT_CARD' | 'DEBIT_CARD'>('MONEY');
     const [searchQuery, setSearchQuery] = useState('');
+
+    // Camera & Scanner
+    const [permission, requestPermission] = useCameraPermissions();
+    const [isScanning, setIsScanning] = useState(false);
+    const [scanned, setScanned] = useState(false);
 
     // Modais
     const [showCartModal, setShowCartModal] = useState(false);
@@ -47,6 +58,36 @@ export default function NewSaleScreen() {
     const [inputType, setInputType] = useState<'ITEM_PRICE' | 'TOTAL_OVERRIDE'>('ITEM_PRICE');
     const [editingItemId, setEditingItemId] = useState<string | null>(null);
 
+    // Delivery State
+    const [isDelivery, setIsDelivery] = useState(false);
+    const [deliveryStreet, setDeliveryStreet] = useState('');
+    const [deliveryNumber, setDeliveryNumber] = useState('');
+    const [deliveryNeighborhood, setDeliveryNeighborhood] = useState('');
+    const [preferredDeliveryDate, setPreferredDeliveryDate] = useState(''); // Novo
+    const [knownAddress, setKnownAddress] = useState(false);
+
+    // Offline State
+    const [isOffline, setIsOffline] = useState(false);
+
+    useEffect(() => {
+        const unsubscribe = NetInfo.addEventListener(state => {
+            setIsOffline(state.isConnected === false);
+        });
+        return () => unsubscribe();
+    }, []);
+    // Auto-fill address
+    useEffect(() => {
+        if (isDelivery && selectedClient && !knownAddress) {
+            setDeliveryStreet(selectedClient.address || ''); // Assuming address is street
+            setDeliveryNeighborhood(selectedClient.neighborhood || '');
+            setDeliveryNumber(''); // Always reset number for confirmation
+        } else if (!isDelivery) {
+            setDeliveryStreet('');
+            setDeliveryNumber('');
+            setDeliveryNeighborhood('');
+        }
+    }, [isDelivery, selectedClient, knownAddress]);
+
     const currencyFormatter = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
 
     // --- LOAD DATA ---
@@ -58,7 +99,7 @@ export default function NewSaleScreen() {
 
     const loadResources = async () => {
         try {
-            const [prods, cli] = await Promise.all([db.getProducts(), db.getClients()]);
+            const [prods, cli] = await Promise.all([db.getProducts(0, 20), db.getClients()]); // Initial load
             if (prods && prods.length > 0) setProducts(prods);
             if (cli) setClients(cli);
         } catch (e) {
@@ -66,6 +107,66 @@ export default function NewSaleScreen() {
         } finally {
             setLoading(false);
         }
+    };
+
+    // Server-Side Search Effect
+    useEffect(() => {
+        const delayDebounceFn = setTimeout(async () => {
+            try {
+                const results = await db.getProducts(0, 50, searchQuery);
+                setProducts(results);
+            } catch (error) {
+                console.error("Search error", error);
+            }
+        }, 500);
+
+        return () => clearTimeout(delayDebounceFn);
+    }, [searchQuery]);
+
+    // Scanner Handler
+    const handleBarCodeScanned = async ({ type, data }: any) => {
+        setScanned(true);
+        setIsScanning(false);
+
+        try {
+            setLoading(true);
+            const product = await db.getProductByBarcode(data);
+            if (product) {
+                addToCart(product);
+                Alert.alert("Produto encontrado!", `${product.name} adicionado ao carrinho.`);
+            } else {
+                Alert.alert(
+                    "Produto não encontrado",
+                    `Nenhum produto com código ${data}. Deseja cadastrar agora?`,
+                    [
+                        { text: 'Cancelar', style: 'cancel' },
+                        {
+                            text: 'Cadastrar',
+                            onPress: () => {
+                                router.push({ pathname: '/products/new', params: { barcode: data } });
+                            }
+                        }
+                    ]
+                );
+            }
+        } catch (error) {
+            Alert.alert("Erro", "Falha ao buscar produto.");
+        } finally {
+            setLoading(false);
+            setScanned(false);
+        }
+    };
+
+    const startScan = async () => {
+        if (!permission?.granted) {
+            const { granted } = await requestPermission();
+            if (!granted) {
+                Alert.alert("Erro", "Permissão da câmera negada.");
+                return;
+            }
+        }
+        setIsScanning(true);
+        setScanned(false);
     };
 
     // Reseta o ajuste manual se esvaziar o carrinho
@@ -167,16 +268,9 @@ export default function NewSaleScreen() {
     // Cálculo do desconto total (Preço Tabela - Preço Final)
     const totalDiscountValue = cartOriginalTotal - finalTotal;
 
-    const filteredProducts = useMemo(() => {
-        let result = products;
-        if (searchQuery) {
-            result = result.filter(p => p.name?.toLowerCase().includes(searchQuery.toLowerCase()));
-        }
-        if (activeCategory !== 'Todos') {
-            result = result.filter(p => p.department === activeCategory);
-        }
-        return result;
-    }, [products, searchQuery, activeCategory]);
+    const filteredProducts = products; // Now products are already filtered by Server
+    // Removed client-side filtering logic to avoid conflict
+
 
     const categories = useMemo(() => {
         const deps = products.map(p => p.department || 'Geral');
@@ -185,10 +279,22 @@ export default function NewSaleScreen() {
 
     // --- FINALIZAÇÃO ---
     const handleFinalize = async () => {
+        if (isOffline) {
+            Alert.alert("Sem Conexão", "Você está offline. Reconecte a internet para salvar a venda.");
+            return;
+        }
+
         if (cart.length === 0) return;
         if (saleType === 'CREDIT' && !selectedClient) {
             Alert.alert("Atenção", "Selecione um cliente para venda a prazo.");
             return;
+        }
+
+        if (isDelivery && !knownAddress) {
+            if (!deliveryStreet.trim() && !deliveryNumber.trim() && !deliveryNeighborhood.trim()) {
+                Alert.alert("Atenção", "Para entrega, preencha ao menos um campo do endereço ou marque 'Não preciso anotar'.");
+                return;
+            }
         }
 
         try {
@@ -201,6 +307,13 @@ export default function NewSaleScreen() {
                 finalTotal: finalTotal,
                 remainingBalance: saleType === 'CREDIT' ? finalTotal : 0,
                 status: saleType === 'CREDIT' ? 'PENDING' : 'PAID',
+                isDelivery: isDelivery,
+                deliveryAddress: isDelivery && !knownAddress
+                    ? `${deliveryStreet}, ${deliveryNumber} - ${deliveryNeighborhood}`
+                    : undefined,
+                deliveryStatus: isDelivery ? 'PENDING' : undefined,
+                preferredDeliveryDate: isDelivery ? preferredDeliveryDate : undefined,
+                paymentMethod: saleType === 'CASH' ? paymentMethod : undefined,
                 items: cart.map(i => ({
                     productId: i.id,
                     productName: i.name,
@@ -215,7 +328,8 @@ export default function NewSaleScreen() {
             Alert.alert("Sucesso", "Venda finalizada!");
             router.back();
         } catch (e) {
-            Alert.alert("Erro", "Falha ao salvar venda.");
+            console.error("FAILED TO SAVE SALE:", e);
+            Alert.alert("Erro", "Falha ao salvar venda. Verifique o console.");
         }
     };
 
@@ -289,14 +403,18 @@ export default function NewSaleScreen() {
         <View style={styles.container}>
             <SafeAreaView style={{ flex: 1 }}>
 
-                <View style={styles.header}>
-                    <View style={styles.headerTop}>
-                        <TouchableOpacity onPress={() => router.back()} style={styles.closeBtn}>
-                            <X size={24} color="#1F2937" />
-                        </TouchableOpacity>
-                        <Text style={styles.headerTitle}>Nova Venda</Text>
-                        <View style={{ width: 24 }} />
-                    </View>
+                <ScreenHeader
+                    title="Nova Venda"
+                    rightAction={<View style={{ width: 24 }} />} // Placeholder or action if needed
+                />
+
+                <View style={styles.contentContainer}>
+                    {/* Header Offline Warning moved inside content if needed, or keep at top */}
+                    {isOffline && (
+                        <View style={{ backgroundColor: Colors.danger, padding: 4, alignItems: 'center' }}>
+                            <Text style={{ color: Colors.white, fontWeight: 'bold', fontSize: 12 }}>⚠ SEM INTERNET - Vendas não serão salvas</Text>
+                        </View>
+                    )}
 
                     <View style={styles.toggleContainer}>
                         <TouchableOpacity
@@ -334,11 +452,14 @@ export default function NewSaleScreen() {
                             <Search size={20} color="#9CA3AF" style={{ marginRight: 8 }} />
                             <TextInput
                                 style={styles.searchInput}
-                                placeholder="Buscar produto..."
+                                placeholder="Buscar (Nome ou Código)..."
                                 value={searchQuery}
                                 onChangeText={setSearchQuery}
                                 placeholderTextColor="#9CA3AF"
                             />
+                            <TouchableOpacity onPress={startScan} style={{ padding: 4 }}>
+                                <Scan size={24} color="#203A43" />
+                            </TouchableOpacity>
                         </View>
                         <TouchableOpacity
                             style={[styles.filterBtn, activeCategory !== 'Todos' && styles.filterBtnActive]}
@@ -487,16 +608,118 @@ export default function NewSaleScreen() {
                             </View>
                         </View>
 
-                        <TouchableOpacity style={styles.finalizeButton} onPress={handleFinalize}>
-                            <Text style={styles.finalizeButtonText}>Confirmar Venda</Text>
+                        {/* Delivery Options */}
+                        <View style={styles.deliveryContainer}>
+                            <View style={styles.deliveryRow}>
+                                <Text style={styles.deliveryLabel}>É para entregar?</Text>
+                                <Switch
+                                    value={isDelivery}
+                                    onValueChange={setIsDelivery}
+                                    trackColor={{ false: "#D1D5DB", true: "#203A43" }}
+                                    thumbColor="#FFF"
+                                />
+                            </View>
+
+                            {isDelivery && (
+                                <View style={styles.deliveryDetails}>
+                                    <View style={{ marginBottom: 12 }}>
+                                        <Text style={{ fontSize: 14, color: '#374151', marginBottom: 4, fontWeight: '600' }}>Previsão / Melhor horário (Opcional)</Text>
+                                        <TextInput
+                                            style={styles.deliveryInput}
+                                            placeholder="Ex: Amanhã a tarde, Sexta até 18h..."
+                                            value={preferredDeliveryDate}
+                                            onChangeText={setPreferredDeliveryDate}
+                                        />
+                                    </View>
+
+                                    <TouchableOpacity
+                                        style={styles.knownAddressRow}
+                                        onPress={() => setKnownAddress(!knownAddress)}
+                                    >
+                                        <View style={[styles.checkbox, knownAddress && styles.checkboxActive]}>
+                                            {knownAddress && <Check size={12} color="#FFF" />}
+                                        </View>
+                                        <Text style={styles.knownAddressText}>Não preciso anotar o endereço (Já conheço)</Text>
+                                    </TouchableOpacity>
+
+                                    {!knownAddress && (
+                                        <View>
+                                            <TextInput
+                                                style={styles.deliveryInput}
+                                                placeholder="Rua"
+                                                value={deliveryStreet}
+                                                onChangeText={setDeliveryStreet}
+                                            />
+                                            <View style={{ flexDirection: 'row', gap: 12, marginTop: 8 }}>
+                                                <TextInput
+                                                    style={[styles.deliveryInput, { flex: 1 }]}
+                                                    placeholder="Número"
+                                                    value={deliveryNumber}
+                                                    onChangeText={setDeliveryNumber}
+                                                    keyboardType="numeric"
+                                                />
+                                                <TextInput
+                                                    style={[styles.deliveryInput, { flex: 2 }]}
+                                                    placeholder="Bairro"
+                                                    value={deliveryNeighborhood}
+                                                    onChangeText={setDeliveryNeighborhood}
+                                                />
+                                            </View>
+                                        </View>
+                                    )}
+                                </View>
+                            )}
+                        </View>
+
+                        {/* Payment Method Selector (Only for CASH) */}
+                        {saleType === 'CASH' && (
+                            <View style={styles.paymentMethodContainer}>
+                                <Text style={styles.sectionLabel}>Forma de Pagamento:</Text>
+                                <View style={styles.paymentChipsRow}>
+                                    <TouchableOpacity
+                                        style={[styles.paymentChip, paymentMethod === 'MONEY' && styles.paymentChipActive]}
+                                        onPress={() => setPaymentMethod('MONEY')}
+                                    >
+                                        <Text style={[styles.paymentChipText, paymentMethod === 'MONEY' && styles.paymentChipTextActive]}>Dinheiro</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        style={[styles.paymentChip, paymentMethod === 'PIX' && styles.paymentChipActive]}
+                                        onPress={() => setPaymentMethod('PIX')}
+                                    >
+                                        <Text style={[styles.paymentChipText, paymentMethod === 'PIX' && styles.paymentChipTextActive]}>PIX</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        style={[styles.paymentChip, paymentMethod === 'CREDIT_CARD' && styles.paymentChipActive]}
+                                        onPress={() => setPaymentMethod('CREDIT_CARD')}
+                                    >
+                                        <Text style={[styles.paymentChipText, paymentMethod === 'CREDIT_CARD' && styles.paymentChipTextActive]}>Crédito</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                        style={[styles.paymentChip, paymentMethod === 'DEBIT_CARD' && styles.paymentChipActive]}
+                                        onPress={() => setPaymentMethod('DEBIT_CARD')}
+                                    >
+                                        <Text style={[styles.paymentChipText, paymentMethod === 'DEBIT_CARD' && styles.paymentChipTextActive]}>Débito</Text>
+                                    </TouchableOpacity>
+                                </View>
+                            </View>
+                        )}
+
+                        <TouchableOpacity
+                            style={[styles.finalizeButton, isOffline && { backgroundColor: '#9CA3AF' }, { marginTop: 24 }]}
+                            onPress={handleFinalize}
+                            disabled={isOffline}
+                        >
+                            <Text style={styles.finalizeButtonText}>
+                                {isOffline ? 'Sem Conexão' : 'Confirmar Venda'}
+                            </Text>
                             <ArrowRight size={24} color="#fff" style={{ marginLeft: 8 }} />
                         </TouchableOpacity>
                     </View>
                 </View>
-            </Modal>
+            </Modal >
 
             {/* --- MODAL FILTRO --- */}
-            <Modal visible={showFilterModal} transparent animationType="fade">
+            < Modal visible={showFilterModal} transparent animationType="fade" >
                 <View style={styles.centeredModalBg}>
                     <View style={styles.filterCard}>
                         <View style={styles.dialogHeader}>
@@ -525,10 +748,10 @@ export default function NewSaleScreen() {
                         />
                     </View>
                 </View>
-            </Modal>
+            </Modal >
 
             {/* --- MODAL INPUT COM +/- --- */}
-            <Modal visible={inputModalVisible} transparent animationType="fade">
+            < Modal visible={inputModalVisible} transparent animationType="fade" >
                 <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.centeredModalBg}>
                     <View style={styles.inputCard}>
                         <Text style={styles.inputLabel}>
@@ -570,7 +793,7 @@ export default function NewSaleScreen() {
                         </View>
                     </View>
                 </KeyboardAvoidingView>
-            </Modal>
+            </Modal >
 
             <Modal visible={showClientModal} animationType="slide">
                 <View style={styles.modalContainer}>
@@ -594,22 +817,54 @@ export default function NewSaleScreen() {
                 </View>
             </Modal>
 
-        </View>
+            {/* SCANNER MODAL */}
+            <Modal visible={isScanning} animationType="slide">
+                <View style={{ flex: 1, backgroundColor: 'black' }}>
+                    <CameraView
+                        style={{ flex: 1 }}
+                        onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
+                        barcodeScannerSettings={{
+                            barcodeTypes: ["qr", "ean13", "ean8", "upc_a", "upc_e", "code128"],
+                        }}
+                    >
+                        <View style={{ flex: 1, justifyContent: 'flex-end', paddingBottom: 50, alignItems: 'center' }}>
+                            <TouchableOpacity
+                                onPress={() => setIsScanning(false)}
+                                style={{ backgroundColor: 'white', padding: 20, borderRadius: 50 }}
+                            >
+                                <X size={24} color="black" />
+                            </TouchableOpacity>
+                            <Text style={{ color: 'white', marginTop: 20, fontWeight: 'bold' }}>Aponte para o código de barras</Text>
+                        </View>
+                    </CameraView>
+                </View>
+            </Modal>
+
+        </View >
     );
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#F3F4F6' },
-    header: { backgroundColor: '#fff', paddingTop: Platform.OS === 'android' ? 40 : 0, paddingBottom: 16 },
-    headerTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, marginBottom: 16 },
-    closeBtn: { padding: 4 },
-    headerTitle: { fontSize: 18, fontWeight: 'bold', color: '#111' },
+    container: { flex: 1, backgroundColor: Colors.background },
+    contentContainer: { flex: 1 },
+    // header: removed
+    // headerTop: removed
+    // closeBtn: removed
+    // headerTitle: removed
 
-    toggleContainer: { flexDirection: 'row', backgroundColor: '#F3F4F6', marginHorizontal: 20, borderRadius: 12, padding: 4 },
+    toggleContainer: { flexDirection: 'row', backgroundColor: Colors.background, marginHorizontal: 20, borderRadius: 12, padding: 4, marginTop: 12 },
     toggleBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 10 },
     toggleBtnActive: { backgroundColor: '#203A43' },
     toggleText: { fontWeight: '600', color: '#6B7280' },
     toggleTextActive: { color: '#fff' },
+
+    paymentMethodContainer: { marginTop: 16, marginHorizontal: 20 },
+    sectionLabel: { fontSize: 14, fontWeight: 'bold', color: '#374151', marginBottom: 8 },
+    paymentChipsRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+    paymentChip: { paddingHorizontal: 12, paddingVertical: 8, backgroundColor: '#E5E7EB', borderRadius: 20, borderWidth: 1, borderColor: '#D1D5DB' },
+    paymentChipActive: { backgroundColor: '#203A43', borderColor: '#203A43' },
+    paymentChipText: { fontSize: 14, color: '#4B5563', fontWeight: '500' },
+    paymentChipTextActive: { color: '#FFF' },
 
     clientBar: { flexDirection: 'row', alignItems: 'center', marginHorizontal: 20, marginTop: 12, padding: 12, backgroundColor: '#fff', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 12 },
     clientBarText: { flex: 1, marginLeft: 12, color: '#374151', fontWeight: '500' },
@@ -706,5 +961,18 @@ const styles = StyleSheet.create({
     clientName: { fontSize: 16, fontWeight: '500' },
 
     discountBadgeContainer: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 4 },
-    discountText: { fontSize: 12, fontWeight: 'bold' }
+    discountText: { fontSize: 12, fontWeight: 'bold' },
+
+    // Delivery Styles
+    deliveryContainer: { marginBottom: 20, backgroundColor: '#F9FAFB', padding: 12, borderRadius: 8 },
+
+
+    deliveryRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+    deliveryLabel: { fontSize: 16, fontWeight: 'bold', color: '#1F2937' },
+    deliveryDetails: { marginTop: 12 },
+    deliveryInput: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 8, padding: 10, fontSize: 14 },
+    knownAddressRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+    knownAddressText: { marginLeft: 8, fontSize: 14, color: '#4B5563' },
+    checkbox: { width: 20, height: 20, borderRadius: 4, borderWidth: 1, borderColor: '#203A43', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff' },
+    checkboxActive: { backgroundColor: '#203A43' }
 });

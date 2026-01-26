@@ -1,5 +1,6 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, Alert, Modal, SafeAreaView, Platform, ActivityIndicator } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Search, Plus, X, Filter, Edit2, Package } from 'lucide-react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Product } from '../../types';
@@ -54,31 +55,76 @@ export default function ProductsScreen() {
     const router = useRouter();
     const [products, setProducts] = useState<Product[]>([]);
     const [search, setSearch] = useState('');
-    const [loading, setLoading] = useState(true);
+    const [page, setPage] = useState(0);
+    const [hasMore, setHasMore] = useState(true);
+    const [loadingInitial, setLoadingInitial] = useState(true);
+    const [loadingMore, setLoadingMore] = useState(false);
 
-    // Filtros
+    // Filtros (Client-Side for now, applied to loaded items - imperfect with pagination but keeps UI functional)
     const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
     const [selectedDept, setSelectedDept] = useState('Todos');
     const [selectedAnimal, setSelectedAnimal] = useState('Todos');
 
-    // Função de carregar
-    const loadProducts = async () => {
-        setLoading(true);
+    const PAGE_SIZE = 20;
+
+    const loadProducts = async (pageToLoad: number, shouldAppend: boolean = false) => {
+        if (pageToLoad === 0) setLoadingInitial(true);
+        else setLoadingMore(true);
+
         try {
-            const data = await db.getProducts();
-            setProducts(data);
+            const data = await db.getProducts(pageToLoad, PAGE_SIZE, search);
+
+            if (shouldAppend) {
+                setProducts(prev => [...prev, ...data]);
+            } else {
+                setProducts(data);
+            }
+
+            setHasMore(data.length === PAGE_SIZE);
         } catch (error) {
             console.error("Failed to load products", error);
         } finally {
-            setLoading(false);
+            setLoadingInitial(false);
+            setLoadingMore(false);
         }
     };
 
     useFocusEffect(
         useCallback(() => {
-            loadProducts();
-        }, [])
+            // Initial load
+            setPage(0);
+            loadProducts(0, false);
+        }, []) // Reload when screen focuses? Or just once? detailed: empty dependency means only on mount? useFocusEffect calls on focus.
+        // If we want to keep list state while navigating away, we might want to avoid full reload.
+        // But for consistency:
     );
+
+    // Handlers
+    const handleSearch = (text: string) => {
+        setSearch(text);
+        setPage(0);
+        // Debounce could be good, but for now direct call on text change might spam DB. 
+        // Let's rely on user pausing or simple delay?
+        // For simplicity in this diff, I'll trigger load in a useEffect on search change with debounce.
+    };
+
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            setPage(0);
+            loadProducts(0, false);
+        }, 500);
+        return () => clearTimeout(timer);
+    }, [search]);
+
+
+    const handleLoadMore = () => {
+        if (!hasMore || loadingMore || loadingInitial) return;
+        const nextPage = page + 1;
+        setPage(nextPage);
+        loadProducts(nextPage, true);
+    };
+
+
 
     const filtered = useMemo(() => {
         return products.filter(p => {
@@ -119,17 +165,22 @@ export default function ProductsScreen() {
 
     return (
         <SafeAreaView style={styles.container}>
-            <View style={styles.header}>
+            <LinearGradient
+                colors={['#0F2027', '#203A43', '#2C5364']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.header}
+            >
                 <Text style={styles.title}>Produtos</Text>
-            </View>
+            </LinearGradient>
 
             <View style={styles.searchContainer}>
                 <Search size={20} color="#9CA3AF" style={styles.searchIcon} />
                 <TextInput
                     style={styles.searchInput}
-                    placeholder="Buscar produto..."
+                    placeholder="Buscar produto (Server)..."
                     value={search}
-                    onChangeText={setSearch}
+                    onChangeText={handleSearch} // Triggers debounce effect
                     placeholderTextColor="#9CA3AF"
                 />
             </View>
@@ -147,17 +198,20 @@ export default function ProductsScreen() {
                 </View>
             </TouchableOpacity>
 
-            {loading ? (
+            {loadingInitial ? (
                 <ActivityIndicator size="large" color="#203A43" style={{ marginTop: 40 }} />
             ) : (
                 <FlatList
-                    data={filtered}
+                    data={filtered} // We still filter loaded items by category if user wants
                     keyExtractor={item => item.id}
                     renderItem={renderProductItem}
                     contentContainerStyle={styles.listContent}
                     ListEmptyComponent={
                         <Text style={styles.emptyText}>Nenhum produto encontrado.</Text>
                     }
+                    onEndReached={handleLoadMore}
+                    onEndReachedThreshold={0.5}
+                    ListFooterComponent={loadingMore ? <ActivityIndicator size="small" color="#203A43" style={{ marginVertical: 20 }} /> : null}
                     initialNumToRender={10}
                     maxToRenderPerBatch={10}
                     windowSize={5}
@@ -165,11 +219,16 @@ export default function ProductsScreen() {
             )}
 
             <TouchableOpacity
-                style={styles.fab}
+                style={styles.fabContainer}
                 activeOpacity={0.8}
                 onPress={() => router.push('/products/new')}
             >
-                <Plus size={32} color="#FFF" />
+                <LinearGradient
+                    colors={['#0F2027', '#203A43', '#2C5364']}
+                    style={styles.fabGradient}
+                >
+                    <Plus size={32} color="#FFF" />
+                </LinearGradient>
             </TouchableOpacity>
 
             {/* Filter Modal */}
@@ -236,8 +295,19 @@ export default function ProductsScreen() {
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#F3F4F6' },
-    header: { paddingHorizontal: 24, paddingTop: Platform.OS === 'android' ? 40 : 20, paddingBottom: 10, backgroundColor: '#fff' },
-    title: { fontSize: 26, fontWeight: 'bold', color: '#1F2937' },
+    header: {
+        paddingHorizontal: 24,
+        paddingTop: Platform.OS === 'android' ? 60 : 20,
+        paddingBottom: 30,
+        borderBottomLeftRadius: 24,
+        borderBottomRightRadius: 24,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.25,
+        shadowRadius: 15,
+        elevation: 8,
+    },
+    title: { fontSize: 26, fontWeight: 'bold', color: '#FFF' },
 
     searchContainer: {
         marginHorizontal: 24, marginVertical: 16, backgroundColor: '#FFF',
@@ -248,9 +318,8 @@ const styles = StyleSheet.create({
     searchInput: { flex: 1, height: '100%', fontSize: 16, color: '#1F2937' },
 
     filterBtn: {
-        marginHorizontal: 24, mb: 16, backgroundColor: '#FFF',
+        marginHorizontal: 24, marginBottom: 16, backgroundColor: '#FFF',
         paddingVertical: 12, paddingHorizontal: 16, borderRadius: 12, borderWidth: 1, borderColor: '#E5E7EB',
-        marginBottom: 16, // Ensure margin bottom
     },
     filterBtnContent: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
     filterBtnLabel: { fontWeight: '600', color: '#4B5563' },
@@ -279,10 +348,12 @@ const styles = StyleSheet.create({
     cardPrice: { alignItems: 'flex-end', justifyContent: 'center' },
     priceText: { fontWeight: 'bold', color: '#203A43', fontSize: 16 },
 
-    fab: {
-        position: 'absolute', bottom: 24, right: 24, width: 64, height: 64, borderRadius: 32,
-        backgroundColor: '#203A43', alignItems: 'center', justifyContent: 'center',
+    fabContainer: {
+        position: 'absolute', bottom: 24, right: 24, borderRadius: 32,
         elevation: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 4
+    },
+    fabGradient: {
+        width: 64, height: 64, borderRadius: 32, alignItems: 'center', justifyContent: 'center'
     },
 
     modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
